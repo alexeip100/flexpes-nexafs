@@ -1,6 +1,8 @@
 import os
+os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")  # allow concurrent readers on Windows
 import csv
 import h5py
+import time
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
@@ -33,8 +35,8 @@ class HDF5Viewer(QMainWindow):
         self.setWindowTitle("FlexPES NEXAFS Plotter")
         self.setGeometry(100, 100, 1250, 600)
 
-        self.VERSION_NUMBER = "1.9"
-        self.CREATION_DATETIME = "2025-07-12"
+        self.VERSION_NUMBER = "1.9.1"
+        self.CREATION_DATETIME = "2025-10-07"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
@@ -383,6 +385,45 @@ class HDF5Viewer(QMainWindow):
     ###############################################################################
     # WATERFALL LOGIC
     ###############################################################################
+    # ---- HDF5 concurrent read helpers ---------------------------------
+    def _open_h5_read(self, path, retries: int = 3):
+        """
+        Open HDF5 file for reading with SWMR and retry a few times if busy.
+        This helps tolerate concurrent writes by another process.
+        """
+          
+        last_error = None
+        for i in range(max(1, int(retries))):
+            try:
+                # Try modern SWMR-compatible open
+                return h5py.File(path, "r", swmr=True, libver="latest", locking=False)
+            except TypeError:
+                # Older h5py: swmr/libver not supported; fall back safely
+                return h5py.File(path, "r")
+            except OSError as e:
+                # Common transient case: file temporarily locked or being written
+                last_error = e
+                time.sleep(0.05 * (i + 1))  # short exponential backoff
+            except Exception as e:
+                last_error = e
+                time.sleep(0.05 * (i + 1))
+    
+        # Final fallback: try without SWMR, even if locked=False only
+        try:
+            return h5py.File(path, "r", locking=False)
+        except Exception as e:
+            # Give up after retries
+            raise last_error or e
+
+
+    def _filter_empty_plot_data(self):
+        """Drop any entries with zero-length arrays to avoid reduction errors."""
+        try:
+            self.plot_data = {k: v for k, v in self.plot_data.items() if getattr(v, "size", 0) > 0}
+        except Exception:
+            pass
+    # --------------------------------------------------------------------
+
     def on_waterfall_toggled(self, state):
         checked = (state == Qt.Checked)
         self.waterfall_slider.setEnabled(checked)
@@ -617,14 +658,21 @@ class HDF5Viewer(QMainWindow):
             parts = key.split("##", 1)
             if len(parts) != 2:
                 continue
+    
             abs_path, hdf5_path = parts
             parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
             y_data = self.plot_data[key]
             x_data = self._lookup_energy(abs_path, parent, len(y_data))
+    
+            if getattr(x_data, "size", 0) == 0:
+                continue
+    
             min_x = np.min(x_data)
             max_x = np.max(x_data)
             groups.append((key, min_x, max_x))
+    
         groups.sort(key=lambda t: t[1])
+    
         merged = []
         for key, min_x, max_x in groups:
             if not merged:
@@ -636,6 +684,7 @@ class HDF5Viewer(QMainWindow):
                     last['max'] = max(last['max'], max_x)
                 else:
                     merged.append({'keys': [key], 'min': min_x, 'max': max_x})
+    
         return merged
 
     def update_raw_tree(self):
@@ -817,20 +866,43 @@ class HDF5Viewer(QMainWindow):
         entry = tokens[0] if tokens and tokens[0].startswith("entry") else ""
         return f"{channel} in {entry}" if entry else channel
 
-    def set_group_visibility(self, filter_str, visible):
-        for abs_path, f in self.hdf5_files.items():
-            def check_item(name, obj):
-                if isinstance(obj, h5py.Dataset) and obj.ndim == 1 and filter_str in name:
-                    combined_label = f"{abs_path}##{name}"
-                    if visible:
-                        self.plot_data[combined_label] = obj[()]
-                        self.raw_visibility[combined_label] = True
-                    else:
-                        self.plot_data.pop(combined_label, None)
-                        self.raw_visibility.pop(combined_label, None)
-            f.visititems(check_item)
+    def set_group_visibility(self, filter_str: str, visible: bool):
+        """
+        Show or hide all 1D datasets whose names contain `filter_str`.
+        Opens each HDF5 file briefly (non-locking) and updates plot visibility.
+        """
+        
+        for abs_path in list(self.hdf5_files.keys()):
+            try:
+                with self._open_h5_read(abs_path) as f:
+    
+                    # ---- inner function defined INSIDE the with-block ----
+                    def check_item(name, obj):
+                        # This function can now see abs_path, filter_str, visible, f, etc.
+                        if isinstance(obj, h5py.Dataset) and getattr(obj, "ndim", 0) == 1 and filter_str in name:
+                            if getattr(obj, "size", 0) == 0:
+                                return
+                            combined_label = f"{abs_path}##{name}"
+                            if visible:
+                                # Read dataset immediately and close file after
+                                self.plot_data[combined_label] = obj[()]
+                                self.raw_visibility[combined_label] = True
+                            else:
+                                self.plot_data.pop(combined_label, None)
+                                self.raw_visibility.pop(combined_label, None)
+    
+                    # ---- visit all items once ----
+                    f.visititems(check_item)
+    
+            except Exception as e:
+                print(f"Warning: could not open {abs_path}: {e}")
+                continue
+    
+        # ---- refresh plots once after processing all files ----
         self.update_plot_raw()
         self.update_pass_button_state()
+
+
 
     def on_legend_pick(self, event):
         if hasattr(event.artist, "get_text"):
@@ -1018,8 +1090,7 @@ class HDF5Viewer(QMainWindow):
         self.update_pass_button_state()
 
     def close_file(self):
-        for f in self.hdf5_files.values():
-            f.close()
+    # No persistent h5py.File handles are kept; just clear state
         self.hdf5_files.clear()
         self.file_label.setText("No file open")
         self.tree.clear()
@@ -1053,56 +1124,93 @@ class HDF5Viewer(QMainWindow):
         self.update_file_label()
         self.update_pass_button_state()
 
+
     def open_file(self):
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self, "Open HDF5 File(s)", "", "HDF5 Files (*.h5 *.hdf5)"
-        )
-        if file_paths:
-            self.region_states.clear()
-            self.proc_region_states.clear()
-            for file_path in file_paths:
-                self.load_hdf5_file(os.path.abspath(file_path))
-            self.combo_poly.setCurrentIndex(2)
-            self.update_file_label()
+        dialog = QFileDialog(self, "Open HDF5 File(s)")
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)          # keep control over size
+        dialog.setOption(QFileDialog.DontUseCustomDirectoryIcons, True)  # <<< SPEED-UP: no per-item icon lookups
+        dialog.setFileMode(QFileDialog.ExistingFiles)
+        dialog.setNameFilter("HDF5 Files (*.h5 *.hdf5)")
+        dialog.setViewMode(QFileDialog.Detail)
+        dialog.setSizeGripEnabled(True)
+    
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.Window | Qt.WindowMinMaxButtonsHint)
+    
+        screen_geom = QApplication.primaryScreen().availableGeometry()
+        dialog.resize(int(screen_geom.width()*0.60), int(screen_geom.height()*0.60))
+        dialog.move(screen_geom.center() - dialog.rect().center())
+    
+        if dialog.exec_() == QDialog.Accepted:
+            file_paths = dialog.selectedFiles()
+            if file_paths:
+                self.region_states.clear()
+                self.proc_region_states.clear()
+                for file_path in file_paths:
+                    self.load_hdf5_file(os.path.abspath(file_path))
+                self.combo_poly.setCurrentIndex(2)
+                self.update_file_label()
+
 
     def load_hdf5_file(self, abs_path):
+        """
+        Non-locking: do not keep h5py.File handles open.
+        Add a top-level item and a dummy child for lazy expansion.
+        """
         try:
-            f = h5py.File(abs_path, 'r')
-            self.hdf5_files[abs_path] = f
+            # Mark file as known without keeping it open
+            self.hdf5_files[abs_path] = True
+    
             file_item = QTreeWidgetItem([os.path.basename(abs_path)])
             file_item.setData(0, 1, (abs_path, ""))
-            if len(f.keys()) > 0:
+    
+            has_children = False
+            try:
+                with self._open_h5_read(abs_path) as f:
+                    has_children = len(f.keys()) > 0
+            except Exception:
+                has_children = False
+    
+            if has_children:
                 file_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
                 file_item.addChild(QTreeWidgetItem(["(click to expand)"]))
+    
             self.tree.addTopLevelItem(file_item)
             file_item.setExpanded(True)
+    
+            # Ensure this scans internally with short-lived opens too
             self.populate_norm_channels(abs_path)
+    
         except Exception as e:
             self.file_label.setText(f"Error opening file: {e}")
 
+
     def populate_norm_channels(self, abs_path):
-        if abs_path not in self.hdf5_files:
-            return
-        f = self.hdf5_files[abs_path]
+        """Populate normalization channels using a short-lived file open (non-locking)."""
         self.combo_norm.clear()
         default_channel = "b107a_em_03_ch2"
         default_index = -1
-        for key in f.keys():
-            entry = f[key]
-            if "measurement" in entry:
-                meas_group = entry["measurement"]
-                for idx, (ds_name, ds_obj) in enumerate(meas_group.items()):
-                    if isinstance(ds_obj, h5py.Dataset) and ds_obj.ndim == 1:
-                        self.combo_norm.addItem(ds_name)
-                        if ds_name == default_channel:
-                            default_index = idx
-                break
+        try:
+            with self._open_h5_read(abs_path) as f:
+                for key in f.keys():
+                    entry = f[key]
+                    if "measurement" in entry:
+                        meas_group = entry["measurement"]
+                        for idx, (ds_name, ds_obj) in enumerate(meas_group.items()):
+                            if isinstance(ds_obj, h5py.Dataset) and ds_obj.ndim == 1:
+                                self.combo_norm.addItem(ds_name)
+                                if ds_name == default_channel:
+                                    default_index = idx
+                        break
+        except Exception:
+            pass
+    
         if default_index != -1:
             self.combo_norm.setCurrentIndex(default_index)
         else:
             idx = self.combo_norm.findText(default_channel)
             if idx != -1:
                 self.combo_norm.setCurrentIndex(idx)
+
 
     def load_subtree(self, item):
         data = item.data(0, 1)
@@ -1111,38 +1219,44 @@ class HDF5Viewer(QMainWindow):
         abs_path, hdf5_path = data
         if abs_path not in self.hdf5_files:
             return
-        f = self.hdf5_files[abs_path]
-        if hdf5_path == "":
-            if item.childCount() == 1 and item.child(0).text(0) == "(click to expand)":
-                item.removeChild(item.child(0))
-                for key in f.keys():
-                    child_item = QTreeWidgetItem([key])
-                    child_item.setData(0, 1, (abs_path, key))
-                    sub_obj = f[key]
-                    if isinstance(sub_obj, h5py.Group) and sub_obj.keys():
-                        child_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
-                        child_item.addChild(QTreeWidgetItem(["(click to expand)"]))
-                    elif isinstance(sub_obj, h5py.Dataset) and sub_obj.ndim == 1:
-                        child_item.setCheckState(1, Qt.Unchecked)
-                        child_item.setData(1, Qt.UserRole, True)
-                    item.addChild(child_item)
-            return
-        if hdf5_path in f:
-            obj = f[hdf5_path]
-            if isinstance(obj, h5py.Group):
-                if item.childCount() == 1 and item.child(0).text(0) == "(click to expand)":
-                    item.removeChild(item.child(0))
-                    for key in obj.keys():
-                        child_item = QTreeWidgetItem([key])
-                        child_item.setData(0, 1, (abs_path, f"{hdf5_path}/{key}"))
-                        sub_obj = obj[key]
-                        if isinstance(sub_obj, h5py.Group) and sub_obj.keys():
-                            child_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
-                            child_item.addChild(QTreeWidgetItem(["(click to expand)"]))
-                        elif isinstance(sub_obj, h5py.Dataset) and sub_obj.ndim == 1:
-                            child_item.setCheckState(1, Qt.Unchecked)
-                            child_item.setData(1, Qt.UserRole, True)
-                        item.addChild(child_item)
+    
+        try:
+            with self._open_h5_read(abs_path) as f:
+                if hdf5_path == "":
+                    if item.childCount() == 1 and item.child(0).text(0) == "(click to expand)":
+                        item.removeChild(item.child(0))
+                        for key in f.keys():
+                            child_item = QTreeWidgetItem([key])
+                            child_item.setData(0, 1, (abs_path, key))
+                            sub_obj = f[key]
+                            if isinstance(sub_obj, h5py.Group) and sub_obj.keys():
+                                child_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                                child_item.addChild(QTreeWidgetItem(["(click to expand)"]))
+                            elif isinstance(sub_obj, h5py.Dataset) and sub_obj.ndim == 1:
+                                child_item.setCheckState(1, Qt.Unchecked)
+                                child_item.setData(1, Qt.UserRole, True)
+                            item.addChild(child_item)
+                    return
+    
+                if hdf5_path in f:
+                    obj = f[hdf5_path]
+                    if isinstance(obj, h5py.Group):
+                        if item.childCount() == 1 and item.child(0).text(0) == "(click to expand)":
+                            item.removeChild(item.child(0))
+                            for key in obj.keys():
+                                child_item = QTreeWidgetItem([key])
+                                child_item.setData(0, 1, (abs_path, f"{hdf5_path}/{key}"))
+                                sub_obj = obj[key]
+                                if isinstance(sub_obj, h5py.Group) and sub_obj.keys():
+                                    child_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                                    child_item.addChild(QTreeWidgetItem(["(click to expand)"]))
+                                elif isinstance(sub_obj, h5py.Dataset) and sub_obj.ndim == 1:
+                                    child_item.setCheckState(1, Qt.Unchecked)
+                                    child_item.setData(1, Qt.UserRole, True)
+                                item.addChild(child_item)
+        except Exception:
+            pass
+
 
     def toggle_plot(self, item, column):
         if column != 1:
@@ -1153,32 +1267,39 @@ class HDF5Viewer(QMainWindow):
         abs_path, hdf5_path = data
         if abs_path not in self.hdf5_files:
             return
-        f = self.hdf5_files[abs_path]
-        if hdf5_path in f:
-            ds_obj = f[hdf5_path]
-            if isinstance(ds_obj, h5py.Dataset) and ds_obj.ndim == 1:
+    
+        try:
+            with self._open_h5_read(abs_path) as f:
+                if hdf5_path in f:
+                    ds_obj = f[hdf5_path]
+                    if isinstance(ds_obj, h5py.Dataset) and ds_obj.ndim == 1:
+                        # robust empty check (handles weird dsets while writer updates)
+                        if getattr(ds_obj, "size", 0) == 0:
+                            QMessageBox.warning(
+                                self, "Empty dataset",
+                                f'The dataset “{hdf5_path}” contains no data and will be ignored.'
+                            )
+                            item.setCheckState(1, Qt.Unchecked)
+                            return
+    
+                        combined_label = f"{abs_path}##{hdf5_path}"
+                        if item.checkState(1) == Qt.Checked:
+                            self.plot_data[combined_label] = ds_obj[()]
+                            self.raw_visibility[combined_label] = True
+                        else:
+                            if combined_label in self.plot_data:
+                                del self.plot_data[combined_label]
+                            self.raw_visibility[combined_label] = False
+    
+            # refresh once after the with-block (file now closed)
+            self._filter_empty_plot_data()
+            self.update_plot_raw()
+            self.update_plot_processed()
+            self.update_pass_button_state()
+    
+        except Exception:
+            pass
 
-                # ───── NEW SAFETY CHECK ─────
-                if ds_obj.size == 0:
-                    QMessageBox.warning(
-                        self, "Empty dataset",
-                        f'The dataset “{hdf5_path}” contains no data and will be ignored.'
-                    )
-                    item.setCheckState(1, Qt.Unchecked)
-                    return
-                # ─────────────────────────────
-
-                combined_label = f"{abs_path}##{hdf5_path}"
-                if item.checkState(1) == Qt.Checked:
-                    self.plot_data[combined_label] = ds_obj[()]
-                    self.raw_visibility[combined_label] = True
-                else:
-                    if combined_label in self.plot_data:
-                        del self.plot_data[combined_label]
-                    self.raw_visibility[combined_label] = False
-                self.update_plot_raw()
-                self.update_plot_processed()
-                self.update_pass_button_state()
 
     def display_data(self, item, column):
         if self.data_tabs.currentIndex() != 0:
@@ -1189,11 +1310,11 @@ class HDF5Viewer(QMainWindow):
         abs_path, hdf5_path = data
         if abs_path not in self.hdf5_files:
             return
-        f = self.hdf5_files[abs_path]
-        if hdf5_path not in f:
-            return
         try:
-            arr = f[hdf5_path][()]
+            with self._open_h5_read(abs_path) as f:
+                if hdf5_path not in f:
+                    return
+                arr = f[hdf5_path][()]
             if isinstance(arr, np.ndarray) and arr.ndim in (0, 1):
                 if arr.ndim == 0:
                     arr = arr.item()
@@ -1210,6 +1331,7 @@ class HDF5Viewer(QMainWindow):
         except Exception as e:
             self.scalar_display_raw.setText(f"Error displaying data: {e}")
 
+
     def plot_curves(self, ax):
         ax.clear()
         for combined_label, y_data in self.plot_data.items():
@@ -1221,15 +1343,27 @@ class HDF5Viewer(QMainWindow):
             abs_path, hdf5_path = parts
             parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
             x_data = self._lookup_energy(abs_path, parent, len(y_data))
-            line, = ax.plot(x_data, y_data, label=self.shorten_label(hdf5_path))
+            if getattr(x_data, "size", 0) == 0 or len(y_data) == 0:
+                continue
+            mlen = min(len(x_data), len(y_data))
+            x_use = x_data[:mlen]
+            y_use = y_data[:mlen]
+            if len(x_use) == 0:
+                continue
+            line, = ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path))
             line.dataset_key = combined_label
         ax.set_xlabel("Photon energy (eV)")
 
     def update_plot_raw(self):
-        self.plot_curves(self.raw_ax)
-        self.canvas_raw_fig.tight_layout()
-        self.canvas_raw.draw()
-        self.update_raw_tree()
+        try:
+                self._filter_empty_plot_data()
+                self.plot_curves(self.raw_ax)
+                self.canvas_raw_fig.tight_layout()
+                self.canvas_raw.draw()
+                self.update_raw_tree()
+        except Exception as e:
+            print("update_plot_raw error:", e)
+
 
     def _plot_multiple_no_bg(self):
         self.proc_ax.clear()
@@ -1242,8 +1376,15 @@ class HDF5Viewer(QMainWindow):
             abs_path, hdf5_path = parts
             parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
             x_data = self._lookup_energy(abs_path, parent, len(y_data))
+            if getattr(x_data, "size", 0) == 0 or len(y_data) == 0:
+                continue
             processed_y = self._apply_normalization(abs_path, parent, y_data)
-            line, = self.proc_ax.plot(x_data, processed_y, label=self.shorten_label(hdf5_path))
+            mlen = min(len(x_data), len(processed_y))
+            x_use = x_data[:mlen]
+            y_use = processed_y[:mlen]
+            if len(x_use) == 0:
+                continue
+            line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path))
             line.dataset_key = combined_label
         self.proc_ax.set_xlabel("Photon energy (eV)")
 
@@ -1280,7 +1421,7 @@ class HDF5Viewer(QMainWindow):
         self.last_plot_len = new_len
         if mode == "Automatic" and main_x is not None and main_y is not None:
             self.spin_preedge.setEnabled(True)
-            self._apply_automatic_bg_new(main_x, main_y)
+            self._apply_automatic_bg_new(main_x, main_y, deg=int(self.combo_poly.currentText()), pre_edge_percent=float(self.spin_preedge.value())/100.0, ax=self.proc_ax, do_plot=True)
             self.reset_manual_mode()
             if self.manual_bg_line is not None:
                 self.manual_bg_line.remove()
@@ -1317,19 +1458,25 @@ class HDF5Viewer(QMainWindow):
         if cache_key in self.energy_cache:
             x_data, _ = self.energy_cache[cache_key]
             return x_data if x_data is not None else np.arange(length)
-        f = self.hdf5_files[abs_path]
+    
         x_data = None
-        if parent:
-            pcap = f"{parent}/pcap_energy_av"
-            mono = f"{parent}/mono_traj_energy"
-            if pcap in f:
-                x_data = f[pcap][()]
-            elif mono in f:
-                x_data = f[mono][()]
+        try:
+            with self._open_h5_read(abs_path) as f:
+                if parent:
+                    pcap = f"{parent}/pcap_energy_av"
+                    mono = f"{parent}/mono_traj_energy"
+                    if pcap in f:
+                        x_data = f[pcap][()]
+                    elif mono in f:
+                        x_data = f[mono][()]
+        except Exception:
+            x_data = None
+    
         if x_data is None:
             x_data = np.arange(length)
         self.energy_cache[cache_key] = (x_data, False)
         return x_data
+
 
     def _compute_background(self, main_x, main_y):
         mode = self.combo_bg.currentText()
@@ -1340,8 +1487,7 @@ class HDF5Viewer(QMainWindow):
             try:
                 xs = [pt["x"] for pt in self.manual_points]
                 ys = [pt["y"] for pt in self.manual_points]
-                p = np.polyfit(xs, ys, deg)
-                background = np.polyval(p, main_x)
+                background, _ = self._robust_polyfit_on_normalized(xs, ys, deg, main_x)
                 background[0] = main_y[0]
             except Exception as ex:
                 print("Error in manual background computation:", ex)
@@ -1387,31 +1533,30 @@ class HDF5Viewer(QMainWindow):
         return None, None
 
     def _apply_normalization(self, abs_path, parent, y_data):
-        """Divide by the chosen I0 channel – but never raise on 0/0 or empty arrays."""
+        """Divide by the chosen I0 channel – open file briefly (non-locking)."""
         if self.chk_normalize.isChecked():
             norm_channel = self.combo_norm.currentText()
             norm_path = f"{parent}/{norm_channel}" if parent else norm_channel
-            if abs_path in self.hdf5_files:
-                f = self.hdf5_files[abs_path]
-                if norm_path in f:
-                    try:
-                        norm_data = f[norm_path][()]
-
-                        # guard against empties
-                        if norm_data.size == 0 or y_data.size == 0:
-                            return y_data.copy()
-
-                        # safe element-wise divide
-                        safe = np.divide(
-                            y_data,
-                            norm_data,
-                            out=np.zeros_like(y_data, dtype=float),
-                            where=norm_data != 0
-                        )
-                        return safe
-                    except Exception as ex:
-                        print("Normalisation error:", ex)
+            try:
+                with self._open_h5_read(abs_path) as f:
+                    if norm_path in f:
+                        try:
+                            norm_data = f[norm_path][()]
+                            if getattr(norm_data, "size", 0) == 0 or getattr(y_data, "size", 0) == 0:
+                                return y_data.copy()
+                            safe = np.divide(
+                                y_data,
+                                norm_data,
+                                out=np.zeros_like(y_data, dtype=float),
+                                where=norm_data != 0
+                            )
+                            return safe
+                        except Exception as ex:
+                            print("Normalisation error:", ex)
+            except Exception:
+                pass
         return y_data
+
 
 
     def _on_normalize_toggled(self, state):
@@ -1423,112 +1568,217 @@ class HDF5Viewer(QMainWindow):
         self.combo_post_norm.setEnabled(state == Qt.Checked)
         self.update_plot_processed()
 
-    def _apply_automatic_bg_new(self, main_x, main_y, do_plot=True):
-        deg = int(self.combo_poly.currentText())
-        N = len(main_x)
-        idx_end = max(2, int(self.spin_preedge.value()/100.0 * N))
-        if deg < 2:
-            x_fit = main_x[:idx_end]
-            y_fit = main_y[:idx_end]
+    def _apply_automatic_bg_new(self, main_x, main_y, deg=None, pre_edge_percent=None, ax=None, do_plot=True):
+        import numpy as np
+        if deg is None:
             try:
-                p = np.polyfit(x_fit, y_fit, deg)
-                background = np.polyval(p, main_x)
+                deg = int(self.combo_poly.currentText())
+            except Exception:
+                try:
+                    deg = int(self.bg_poly_degree_spinbox.value())
+                except Exception:
+                    deg = 2
+        if pre_edge_percent is None:
+            try:
+                pre_edge_percent = float(self.spin_preedge.value()) / 100.0
+            except Exception:
+                try:
+                    pre_edge_percent = float(self.pre_edge_spinbox.value()) / 100.0
+                except Exception:
+                    pre_edge_percent = 0.20
+        if ax is None:
+            for name in ("proc_ax", "ax_processed", "ax_proc", "ax2", "ax"):
+                if hasattr(self, name):
+                    cand = getattr(self, name)
+                    if hasattr(cand, "plot"):
+                        ax = cand
+                        break
+        main_x = np.asarray(main_x, dtype=float).ravel()
+        main_y = np.asarray(main_y, dtype=float).ravel()
+        N = len(main_x)
+        if N == 0 or N != len(main_y):
+            return np.zeros_like(main_y, dtype=float)
+        finite = np.isfinite(main_x) & np.isfinite(main_y)
+        x_all = main_x[finite]
+        y_all = main_y[finite]
+        Nf = len(x_all)
+        if Nf < 3:
+            background = np.zeros_like(main_y, dtype=float)
+            if N > 0 and np.isfinite(main_y[0]):
                 background[0] = main_y[0]
-            except Exception as ex:
-                print("Error in new Automatic (deg<2) polynomial:", ex)
-                background = np.zeros_like(main_y)
-            if do_plot and not self.chk_show_without_bg.isChecked():
-                self.proc_ax.plot(main_x, background, '--', color='red', label="Background")
-                self.proc_ax.axvline(
-                    x=main_x[idx_end], color='black', linestyle='--',
-                    linewidth=0.5, label="Pre-edge limit"
-                )
+            if do_plot and ax is not None:
+                if hasattr(self, "_auto_bg_vline") and getattr(self._auto_bg_vline, "axes", None) is ax:
+                    try: self._auto_bg_vline.remove()
+                    except Exception: pass
+                self._auto_bg_vline = None
+                if hasattr(self, "_auto_bg_line") and getattr(self._auto_bg_line, "axes", None) is ax:
+                    try: self._auto_bg_line.remove()
+                    except Exception: pass
+                self._auto_bg_line = None
             return background
-        try:
-            i_start = int(0.95 * N)
-            if i_start < idx_end:
-                i_start = max(idx_end+1, i_start)
-            if i_start >= N-1:
-                i_start = max(N-2, 0)
-            x_tail = main_x[i_start:]
-            y_tail = main_y[i_start:]
+        idx_end_finite = max(1, int(pre_edge_percent * Nf))
+        idx_end_finite = min(idx_end_finite, Nf - 1)
+        M = idx_end_finite
+        deg_eff = int(max(0, deg))
+        deg_eff = min(deg_eff, max(0, min(M, Nf) - 1))
+        x_min = float(x_all[0]); x_max = float(x_all[-1])
+        span = x_max - x_min
+        if span <= 0: span = 1.0
+        x_prime = 2.0 * (x_all - x_min) / span - 1.0
+        x_pre = x_prime[:M]; y_pre = y_all[:M]
+        x_end_prime = x_prime[-1]
+        i_start = max(M + 1, int(0.95 * Nf))
+        if i_start >= Nf - 1: i_start = max(Nf - 2, 0)
+        x_tail = x_all[i_start:]; y_tail = y_all[i_start:]
+        if len(x_tail) >= 2:
             slope_final, _ = np.polyfit(x_tail, y_tail, 1)
-            M = idx_end
-            x_end = main_x[-1]
-            A = np.zeros((M+1, deg+1))
-            b = np.zeros(M+1)
-            for i in range(M):
-                xx = main_x[i]
-                yy = main_y[i]
-                for k in range(deg+1):
-                    A[i, k] = xx**(deg-k)
-                b[i] = yy
-            deriv_row = np.zeros(deg+1)
-            for k in range(deg+1):
-                power = deg-k
-                if power > 0:
-                    deriv_row[k] = power * (x_end**(power-1))
-            A[M, :] = deriv_row
-            b[M] = slope_final
-            coeffs, residuals, rank, svals = np.linalg.lstsq(A, b, rcond=None)
-            background = np.zeros_like(main_y)
-            for i in range(N):
-                xx = main_x[i]
-                val = 0.0
-                for kk in range(deg+1):
-                    power = deg - kk
-                    val += coeffs[kk] * (xx**power)
-                background[i] = val
-            background[0] = main_y[0]
-        except Exception as ex:
-            print("Error in new Automatic slope fit (deg>=2):", ex)
-            background = np.zeros_like(main_y)
-        if do_plot and not self.chk_show_without_bg.isChecked():
-            self.proc_ax.plot(main_x, background, '--', color='red', label="Background")
-            self.proc_ax.axvline(
-                x=main_x[idx_end], color='black', linestyle='--',
-                linewidth=0.5, label="Pre-edge limit"
-            )
-        return background
-
-    def _apply_manual_bg(self, main_x, main_y):
-        if not self.manual_points:
-            return
-
+        else:
+            slope_final = 0.0
+        slope_prime = slope_final * (span / 2.0)
+        A = np.zeros((M, deg_eff + 1), dtype=float)
+        for i in range(M):
+            A[i, :] = np.array([x_pre[i] ** (deg_eff - k) for k in range(deg_eff + 1)], dtype=float)
+        b = y_pre.copy()
+        deriv_row = np.zeros(deg_eff + 1, dtype=float)
+        for k in range(deg_eff + 1):
+            power = deg_eff - k
+            if power > 0:
+                deriv_row[k] = power * (x_end_prime ** (power - 1))
+        row_norms = np.linalg.norm(A, axis=1)
+        w = np.nanmedian(row_norms) if row_norms.size else 1.0
+        if not np.isfinite(w) or w <= 0: w = 1.0
+        A2 = np.vstack([A, w * deriv_row[None, :]])
+        b2 = np.concatenate([b, [w * slope_prime]])
         try:
-            d   = int(self.combo_poly.currentText())
-            xs  = [pt["x"] for pt in self.manual_points]
-            ys  = [pt["y"] for pt in self.manual_points]
-            poly = np.polyfit(xs, ys, d)
-            self.manual_poly = poly
-            background = np.polyval(poly, main_x)
-            background[0] = main_y[0]           # anchor first point to data[0]
-
-            if not self.chk_show_without_bg.isChecked():
-
-                for pt in self.manual_points:
-                    marker, = self.proc_ax.plot(
-                        pt["x"], pt["y"], 'bo', markersize=8, picker=5
-                    )
-                    pt["artist"] = marker
-
-                if (
-                    self.manual_bg_line is not None
-                    and self.manual_bg_line.axes is self.proc_ax
-                ):
-                    self.manual_bg_line.remove()
-                self.manual_bg_line = None      
-
-                self.manual_bg_line, = self.proc_ax.plot(
-                    main_x, background, '--', color='red', label='Background'
-                )
-
-            return background
-
+            coeffs, *_ = np.linalg.lstsq(A2, b2, rcond=None)
+            if not np.all(np.isfinite(coeffs)):
+                raise np.linalg.LinAlgError("Non-finite coefficients")
+            x_prime_full = 2.0 * (main_x - x_min) / span - 1.0
+            background = np.zeros_like(main_y, dtype=float)
+            for i in range(N):
+                xx = x_prime_full[i]
+                val = 0.0
+                for kk in range(deg_eff + 1):
+                    power = deg_eff - kk
+                    val += coeffs[kk] * (xx ** power)
+                background[i] = val
         except Exception as ex:
-            print("Error in manual polynomial interpolation:", ex)
-            return np.zeros_like(main_y)
+            print("Automatic BG (constrained) failed -> fallback:", ex)
+            idx_end_plot = max(1, int(pre_edge_percent * N))
+            idx_end_plot = min(idx_end_plot, N - 1)
+            x_fit = main_x[:idx_end_plot]; y_fit = main_y[:idx_end_plot]
+            msk = np.isfinite(x_fit) & np.isfinite(y_fit)
+            x_fit = x_fit[msk]; y_fit = y_fit[msk]
+            if len(x_fit) == 0:
+                background = np.zeros_like(main_y)
+            else:
+                x0 = float(x_fit[0]); x1 = float(x_fit[-1])
+                span_fb = max(1.0, x1 - x0)
+                xp = 2.0 * (x_fit - x0) / span_fb - 1.0
+                deg_fb = min(int(deg), max(0, len(xp) - 1))
+                p = np.polyfit(xp, y_fit, deg_fb)
+                xp_full = 2.0 * (main_x - x0) / span_fb - 1.0
+                background = np.polyval(p, xp_full)
+        if np.isfinite(main_y[0]):
+            background[0] = main_y[0]
+        if do_plot and ax is not None:
+            idx_end_plot = max(1, int(pre_edge_percent * N))
+            idx_end_plot = min(idx_end_plot, N - 1)
+            
+            def _alive(artist):
+                return (artist is not None) and (getattr(artist, "axes", None) is ax)
+            if not hasattr(self, "_auto_bg_vline"): self._auto_bg_vline = None
+            if not hasattr(self, "_auto_bg_line"): self._auto_bg_line = None
+            if not _alive(self._auto_bg_vline):
+                try:
+                    self._auto_bg_vline = ax.axvline(main_x[idx_end_plot], linestyle="--", linewidth=1.0, alpha=0.6, label="_auto_preedge")
+                except Exception:
+                    self._auto_bg_vline = None
+            else:
+                try:
+                    x0 = main_x[idx_end_plot]
+                    self._auto_bg_vline.set_xdata([x0, x0])
+                except Exception:
+                    self._auto_bg_vline = None
+            if not _alive(self._auto_bg_line):
+                try:
+                    (self._auto_bg_line,) = ax.plot(main_x, background, linestyle="--", linewidth=1.5, label="_auto_bg")
+                except Exception:
+                    self._auto_bg_line = None
+            else:
+                try:
+                    self._auto_bg_line.set_data(main_x, background)
+                except Exception:
+                    self._auto_bg_line = None
+            try: ax.figure.canvas.draw_idle()
+            except Exception: pass
+        return background
+    
+    def _robust_polyfit_on_normalized(self, xs, ys, deg, x_eval):
+        """Stable polynomial fit for manual BG in normalized x ∈ [-1,1]."""
+        import numpy as np
+        xs = np.asarray(xs, dtype=float).ravel()
+        ys = np.asarray(ys, dtype=float).ravel()
+        x_eval = np.asarray(x_eval, dtype=float).ravel()
+        m = np.isfinite(xs) & np.isfinite(ys)
+        xs, ys = xs[m], ys[m]
+        if xs.size == 0:
+            return np.zeros_like(x_eval, dtype=float), np.array([0.0], dtype=float)
+        n_uniq = np.unique(xs).size
+        deg_eff = int(max(0, min(int(deg), max(0, n_uniq - 1))))
+        x0 = float(xs.min()); x1 = float(xs.max())
+        span = max(1e-12, x1 - x0)
+        xp = 2.0 * (xs - x0) / span - 1.0
+        xp_eval = 2.0 * (x_eval - x0) / span - 1.0
+        p = np.polyfit(xp, ys, deg_eff)
+        bg = np.polyval(p, xp_eval)
+        return bg, p
 
+    
+    def _apply_manual_bg(self, main_x, main_y):
+        import numpy as np
+        if not getattr(self, "manual_points", None):
+            return np.zeros_like(main_y)
+        try:
+            d = int(self.combo_poly.currentText())
+        except Exception:
+            d = 2
+        xs = [pt["x"] for pt in self.manual_points]
+        ys = [pt["y"] for pt in self.manual_points]
+        background, coeffs = self._robust_polyfit_on_normalized(xs, ys, d, main_x)
+        if np.isfinite(main_y[0]):
+            background[0] = main_y[0]
+        self.manual_poly = coeffs
+    
+        # Draw anchors always
+        for pt in self.manual_points:
+            if pt.get("artist") is not None:
+                try: pt["artist"].remove()
+                except Exception: pass
+                pt["artist"] = None
+            marker, = self.proc_ax.plot(pt["x"], pt["y"], 'bo', markersize=8, picker=5)
+            pt["artist"] = marker
+    
+        # Show/hide red background line
+        hide_bg = getattr(self, "chk_show_without_bg", None) is not None and self.chk_show_without_bg.isChecked()
+        if hide_bg:
+            if getattr(self, "manual_bg_line", None) is not None:
+                try: self.manual_bg_line.remove()
+                except Exception: pass
+                self.manual_bg_line = None
+        else:
+            if getattr(self, "manual_bg_line", None) is not None and self.manual_bg_line.axes is self.proc_ax:
+                try: self.manual_bg_line.remove()
+                except Exception: pass
+                self.manual_bg_line = None
+            self.manual_bg_line, = self.proc_ax.plot(main_x, background, '--', color='red', label='Background')
+        try:
+            self.canvas_proc.draw_idle()
+        except Exception:
+            pass
+        return background
+    
+    
     def _show_subtracted_only(self, mode, main_x, main_y):
         self.proc_ax.clear()
         self.manual_bg_line = None
@@ -1540,7 +1790,7 @@ class HDF5Viewer(QMainWindow):
                 d = int(self.combo_poly.currentText())
                 xs = [pt["x"] for pt in self.manual_points]
                 ys = [pt["y"] for pt in self.manual_points]
-                background = np.polyval(np.polyfit(xs, ys, d), main_x)
+                background, _ = self._robust_polyfit_on_normalized(xs, ys, d, main_x)
                 background[0] = main_y[0]
             except Exception:
                 background = np.zeros_like(main_y)
@@ -1571,234 +1821,246 @@ class HDF5Viewer(QMainWindow):
 
         self.proc_ax.plot(main_x, sub, label="Background subtracted")
         self.proc_ax.set_xlabel("Photon energy (eV)")
-
-    def init_manual_mode(self, main_x, main_y):
+    
+    def init_manual_mode(self, main_x, main_y, auto_bg=None):
+        """Prepare manual background mode: anchors + events.
+        If auto_bg is None, compute a non-plotted automatic BG for seeding.
         """
-        Initialise the manual background so that it coincides with the current
-        automatic background of the same polynomial degree.  Also set up blue
-        anchor points, vertical drag limits, and red dashed line.
-        """
-
-        # ------------------------------------------------------------------
-        # 0.  House-keeping & reset any old manual artefacts
-        # ------------------------------------------------------------------
-        # clear previous blue markers
-        for pt in getattr(self, "manual_points", []):
-            if pt.get("artist") is not None:
-                pt["artist"].remove()
-
-        # clear previous red dashed line
-        if self.manual_bg_line is not None:
-            self.manual_bg_line.remove()
-
-        self.manual_mode        = True
-        self.manual_points      = []
-        self.manual_bg_line     = None
-        self.manual_poly        = None
-
-        d                       = int(self.combo_poly.currentText() or 0)
-        self.manual_poly_degree = d
-        N                       = len(main_x)
-
-        # ------------------------------------------------------------------
-        # 1.   Compute the *automatic* background of the same degree
-        #      (using existing routine, but without plotting)
-        # ------------------------------------------------------------------
-        auto_bg = self._apply_automatic_bg_new(main_x, main_y, do_plot=False)
-
-        # ------------------------------------------------------------------
-        # 2.   Choose anchor indices (d+1 of them) and collect (x,y)
-        # ------------------------------------------------------------------
-        idx0     = 0
-        idx_last = N - 1
-        idx_pe   = max(2, int(self.spin_preedge.value() / 100.0 * N))  # pre-edge
-
-        if d == 0:
-            anchor_idx = [idx0]
-        elif d == 1:
-            anchor_idx = [idx0, idx_last]
-        elif d == 2:
-            anchor_idx = [idx0, idx_pe, idx_last]
-        elif d == 3:
-            mid        = (idx_pe + idx_last) // 2
-            anchor_idx = [idx0, idx_pe, mid, idx_last]
-        else:
-            # evenly-spaced indices for higher degrees
-            anchor_idx = np.linspace(0, idx_last, d + 1, dtype=int).tolist()
-
-        # ------------------------------------------------------------------
-        # 3.   Create manual_points list and plot blue markers (if visible)
-        # ------------------------------------------------------------------
-        for idx in anchor_idx:
-            x_pt = float(main_x[idx])
-            y_pt = float(auto_bg[idx])
-
-            if not self.chk_show_without_bg.isChecked():
-                artist, = self.proc_ax.plot(x_pt, y_pt, 'bo', markersize=8, picker=5)
-            else:
-                artist = None
-
-            self.manual_points.append({"x": x_pt, "y": y_pt, "artist": artist})
-
-        # ------------------------------------------------------------------
-        # 4.   Fit polynomial through those points → identical to auto_bg
-        # ------------------------------------------------------------------
-        xs = [pt["x"] for pt in self.manual_points]
-        ys = [pt["y"] for pt in self.manual_points]
-        self.manual_poly = np.polyfit(xs, ys, d)  # exact fit
-
-        bg_curve = np.polyval(self.manual_poly, main_x)
-        bg_curve[0] = auto_bg[0]                   # anchor first point
-
-        # Draw / update red dashed background line
-        self.manual_bg_line, = self.proc_ax.plot(
-            main_x, bg_curve, '--', color='red', label='Background'
-        )
-
-        # ------------------------------------------------------------------
-        # 5.   Compute vertical drag limits for blue dots:
-        #      [min(data) − 2·span,   max(data) + 2·span]
-        # ------------------------------------------------------------------
-        y_min_data  = float(np.min(main_y))
-        y_max_data  = float(np.max(main_y))
-        y_span      = y_max_data - y_min_data
-        self.manual_y_min_allowed = y_min_data - 2.0 * y_span
-        self.manual_y_max_allowed = y_max_data + 2.0 * y_span
-
-        # ------------------------------------------------------------------
-        # 6.   Refresh canvas
-        # ------------------------------------------------------------------
-        self.canvas_proc.draw()
-
-
-
-    def on_press(self, event):
-        if not self.manual_mode or event.inaxes != self.proc_ax or self.chk_show_without_bg.isChecked():
-            return
-        tolerance = 10
+        import numpy as np
+        self.manual_mode = True
+        self._drag_index = None
+        self.manual_poly_degree = int(self.combo_poly.currentText())
+    
+        # Seed auto_bg if not provided
+        if auto_bg is None:
+            try:
+                deg = int(self.combo_poly.currentText())
+            except Exception:
+                deg = 2
+            try:
+                pre = float(self.spin_preedge.value()) / 100.0
+            except Exception:
+                pre = 0.20
+            auto_bg = self._apply_automatic_bg_new(
+                main_x, main_y, deg=deg, pre_edge_percent=pre, ax=self.proc_ax, do_plot=False
+            )
+    
+        # Initialize anchors if absent
+        if not hasattr(self, "manual_points") or not self.manual_points:
+            n_seed = 4
+            n = len(main_x)
+            idxs = np.linspace(0, max(0, n - 1), n_seed).astype(int) if n > 0 else np.array([], dtype=int)
+            self.manual_points = [{"x": float(main_x[i]), "y": float(auto_bg[i]), "artist": None} for i in idxs]
+    
+        # Clear old artists
         for pt in self.manual_points:
-            if pt["artist"] is None:
-                continue
-            x_disp, y_disp = self.proc_ax.transData.transform((pt["x"], pt["y"]))
-            if np.hypot(x_disp - event.x, y_disp - event.y) < tolerance:
-                self.active_point = pt
-                break
-
-    def on_motion(self, event):
-        """
-        Mouse-drag handler for blue anchor points in manual-background mode.
-
-        Adds:
-          • vertical clamping to [manual_y_min_allowed, manual_y_max_allowed]
-          • ghost-marker removal (only one marker per point)
-        """
-        # ------------------------------------------------------------------
-        # 0.  Guards
-        # ------------------------------------------------------------------
-        if (
-            not self.manual_mode
-            or self.active_point is None
-            or event.inaxes is not self.proc_ax
-            or self.chk_show_without_bg.isChecked()
-            or event.xdata is None
-            or event.ydata is None
-        ):
+            art = pt.get("artist")
+            if art is not None:
+                try: art.remove()
+                except Exception: pass
+            pt["artist"] = None
+    
+        # Draw blue, pickable anchors (always visible)
+        for pt in self.manual_points:
+            (ln,) = self.proc_ax.plot([pt["x"]], [pt["y"]], marker="o", markersize=7,
+                                      mfc="#66b3ff", mec="k", linestyle="None", zorder=6, label="_manual_anchor")
+            try: ln.set_picker(5)
+            except Exception: pass
+            pt["artist"] = ln
+    
+        # Draw initial manual BG = auto BG (red dashed). Visibility is handled elsewhere.
+        if getattr(self, "manual_bg_line", None) is not None:
+            try: self.manual_bg_line.remove()
+            except Exception: pass
+            self.manual_bg_line = None
+        self.manual_bg_line, = self.proc_ax.plot(main_x, auto_bg, "--", color="red", label="Background")
+    
+        # Connect events
+        canvas = self.proc_ax.figure.canvas
+        if not hasattr(self, "_mpl_cids"):
+            self._mpl_cids = {}
+        for key in ("press", "motion", "release"):
+            cid = self._mpl_cids.get(key)
+            if cid is not None:
+                try: canvas.mpl_disconnect(cid)
+                except Exception: pass
+        self._mpl_cids["press"] = canvas.mpl_connect("button_press_event", self.on_press)
+        self._mpl_cids["motion"] = canvas.mpl_connect("motion_notify_event", self.on_motion)
+        self._mpl_cids["release"] = canvas.mpl_connect("button_release_event", self.on_release)
+    
+        try:
+            canvas.draw_idle()
+        except Exception:
+            pass
+    def on_press(self, event):
+        import numpy as np
+        if not getattr(self, "manual_mode", False):
             return
-
-        # ------------------------------------------------------------------
-        # 1.  Clamp Y to allowed range
-        # ------------------------------------------------------------------
-        #  (fallback to unlimited if attributes are missing)
-        y_low  = getattr(self, "manual_y_min_allowed", -np.inf)
-        y_high = getattr(self, "manual_y_max_allowed",  np.inf)
-
-        clamped_y = float(np.clip(event.ydata, y_low, y_high))
-        clamped_x = float(event.xdata)
-
-        # Update the active point's data
-        self.active_point["x"] = clamped_x
-        self.active_point["y"] = clamped_y
-        self.active_point["artist"].set_xdata([clamped_x])
-        self.active_point["artist"].set_ydata([clamped_y])
-
-        # ------------------------------------------------------------------
-        # 2.  Remove any stray blue-dot artists (prevents “ghosts”)
-        # ------------------------------------------------------------------
-        legitimate = {pt["artist"] for pt in self.manual_points if pt.get("artist")}
-
-        for ln in list(self.proc_ax.lines):  # copy; we may delete
-            if (
-                ln not in legitimate
-                and ln.get_marker() == 'o'
-                and ln.get_linestyle() == 'None'
-                and ln.get_color() in ('b', '#0000ff')
-            ):
-                ln.remove()
-
-        # ------------------------------------------------------------------
-        # 3.  Re-fit polynomial and update the red dashed background
-        # ------------------------------------------------------------------
+        if getattr(event, "button", None) != 1:
+            return
+        if event.inaxes is not getattr(self, "proc_ax", None):
+            return
+        if not getattr(self, "manual_points", None):
+            return
+        # Cache current y-limits to keep scale stable while dragging
+        try:
+            self._drag_ylim = tuple(self.proc_ax.get_ylim())
+        except Exception:
+            self._drag_ylim = None
+    
         xs = np.array([pt["x"] for pt in self.manual_points], dtype=float)
         ys = np.array([pt["y"] for pt in self.manual_points], dtype=float)
-        deg = int(self.combo_poly.currentText() or 0)
-
+        if not len(xs) or event.x is None or event.y is None:
+            return
+        trans = self.proc_ax.transData
+        pts_display = trans.transform(np.column_stack([xs, ys]))
+        click = np.array([event.x, event.y], dtype=float)
+        d2 = np.sum((pts_display - click) ** 2, axis=1)
+        i_min = int(np.argmin(d2))
+        if d2[i_min] <= 10.0 ** 2:
+            self._drag_index = i_min
+        else:
+            self._drag_index = None
+    
+    def on_motion(self, event):
+        import numpy as np
+        if not getattr(self, "manual_mode", False):
+            return
+        i = getattr(self, "_drag_index", None)
+        if i is None:
+            return
+        if event.inaxes is not getattr(self, "proc_ax", None):
+            return
+        if event.ydata is None or not np.isfinite(event.ydata):
+            return
         try:
-            coeffs = np.polyfit(xs, ys, deg)
-        except Exception:            # ill-conditioned fit – just refresh
-            self.canvas_proc.draw()
+            x_fixed = float(self.manual_points[i]["x"])
+        except Exception:
             return
-
-        self.manual_poly = coeffs
-
-        # Obtain x grid (main curve) for evaluation
+        y_new = float(event.ydata)
+        self.manual_points[i]["y"] = y_new
+        art = self.manual_points[i].get("artist")
+        if art is not None:
+            try: art.set_data([x_fixed], [y_new])
+            except Exception: pass
+        xs = np.array([pt["x"] for pt in self.manual_points], dtype=float)
+        ys = np.array([pt["y"] for pt in self.manual_points], dtype=float)
+        try:
+            deg = int(self.combo_poly.currentText())
+        except Exception:
+            deg = 2
         x_grid = None
-        for l in self.proc_ax.get_lines():
-            if l is not self.manual_bg_line and l.get_linestyle() != 'None':
-                x_grid = l.get_xdata()
-                break
-        if x_grid is None and self.manual_bg_line is not None:
-            x_grid = self.manual_bg_line.get_xdata()
-
-        if x_grid is not None:
-            bg = np.polyval(coeffs, x_grid)
-            bg[0] = ys[0]            # anchor first point
-
-            if self.manual_bg_line is None:
-                self.manual_bg_line, = self.proc_ax.plot(
-                    x_grid, bg, '--', color='red', label='Background'
-                )
-            else:
-                self.manual_bg_line.set_ydata(bg)
-
-        # ------------------------------------------------------------------
-        # 4.  Dynamic y-axis so marker always visible
-        # ------------------------------------------------------------------
-        y_all = []
-
-        for l in self.proc_ax.get_lines():
-            if l is not self.manual_bg_line and l.get_linestyle() != 'None':
-                y_all.extend(l.get_ydata())
-        if self.manual_bg_line is not None:
-            y_all.extend(self.manual_bg_line.get_ydata())
-        y_all.extend(ys.tolist())
-
-        if y_all:
-            y_min, y_max = np.min(y_all), np.max(y_all)
-            span = y_max - y_min
-            pad  = 0.10 * span if span > 0 else 1.0
-            self.proc_ax.set_ylim(y_min - pad, y_max + pad)
-
-        # ------------------------------------------------------------------
-        # 5.  Redraw
-        # ------------------------------------------------------------------
-        self.canvas_proc.draw()
-
-
-    def on_release(self, event):
-        if not self.manual_mode:
+        if getattr(self, "manual_bg_line", None) is not None:
+            try:
+                x_grid = np.asarray(self.manual_bg_line.get_xdata(), dtype=float)
+            except Exception:
+                x_grid = None
+        if x_grid is None or x_grid.size == 0:
+            lines = [ln for ln in self.proc_ax.get_lines() if ln is not getattr(self, "manual_bg_line", None)]
+            for ln in lines:
+                xd = ln.get_xdata()
+                if xd is not None and len(xd):
+                    x_grid = np.asarray(xd, dtype=float)
+                    break
+        if x_grid is None or x_grid.size == 0:
+            x_min = np.nanmin(xs) if np.isfinite(xs).any() else 0.0
+            x_max = np.nanmax(xs) if np.isfinite(xs).any() else 1.0
+            if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
+                x_min, x_max = 0.0, 1.0
+            x_grid = np.linspace(x_min, x_max, 512)
+        try:
+            bg, coeffs = self._robust_polyfit_on_normalized(xs, ys, deg, x_grid)
+            self.manual_poly = coeffs
+        except Exception:
+            try: self.proc_ax.figure.canvas.draw_idle()
+            except Exception: pass
             return
-        self.active_point = None
-
+        if bg.size and ys.size and np.isfinite(ys[0]):
+            bg[0] = ys[0]
+        m = np.isfinite(x_grid) & np.isfinite(bg)
+        x_plot = x_grid[m] if np.any(m) else np.array([], dtype=float)
+        y_plot = bg[m]      if np.any(m) else np.array([], dtype=float)
+        if getattr(self, "manual_bg_line", None) is None:
+            if x_plot.size and y_plot.size:
+                try:
+                    (self.manual_bg_line,) = self.proc_ax.plot(x_plot, y_plot, "--", color="red", label="Background")
+                except Exception:
+                    self.manual_bg_line = None
+        else:
+            if x_plot.size and y_plot.size:
+                try:
+                    self.manual_bg_line.set_data(x_plot, y_plot)
+                except Exception:
+                    try: self.manual_bg_line.remove()
+                    except Exception: pass
+                    self.manual_bg_line = None
+                    try:
+                        (self.manual_bg_line,) = self.proc_ax.plot(x_plot, y_plot, "--", color="red", label="Background")
+                    except Exception:
+                        self.manual_bg_line = None
+        ys_fin = ys[np.isfinite(ys)]
+        y_candidates = []
+        if y_plot.size: y_candidates.append(y_plot)
+        if ys_fin.size: y_candidates.append(ys_fin)
+        if y_candidates:
+            all_y = np.concatenate(y_candidates)
+            if all_y.size:
+                y_min = float(np.nanmin(all_y)); y_max = float(np.nanmax(all_y))
+                if np.isfinite(y_min) and np.isfinite(y_max):
+                    # Compute a padded target box from current content
+                    if y_max <= y_min:
+                        pad_content = max(1e-6, abs(y_max) * 0.05 + 1e-6)
+                    else:
+                        pad_content = 0.05 * (y_max - y_min)
+                    target_low  = y_min - pad_content
+                    target_high = y_max + pad_content
+    
+                    # During drag, only EXPAND y-limits (no sudden zoom-in)
+                    curr_low, curr_high = None, None
+                    if hasattr(self, "_drag_ylim") and isinstance(self._drag_ylim, tuple):
+                        curr_low, curr_high = self._drag_ylim
+                    else:
+                        try:
+                            curr_low, curr_high = self.proc_ax.get_ylim()
+                        except Exception:
+                            pass
+    
+                    if curr_low is not None and curr_high is not None:
+                        new_low  = min(curr_low, target_low)
+                        new_high = max(curr_high, target_high)
+                    else:
+                        new_low, new_high = target_low, target_high
+    
+                    # Set limits; guard against identical bounds
+                    if np.isfinite(new_low) and np.isfinite(new_high):
+                        if new_high <= new_low:
+                            new_high = new_low + 1.0
+                        try:
+                            self.proc_ax.set_ylim(new_low, new_high)
+                        except Exception:
+                            pass
+        
+        try: self.proc_ax.figure.canvas.draw_idle()
+        except Exception: pass
+    
+    def on_release(self, event):
+        if not getattr(self, "manual_mode", False):
+            return
+        if getattr(event, "button", None) != 1:
+            return
+        self._drag_index = None
+        # Restore autoscale after drag ends (smoothly)
+        try:
+            self.proc_ax.relim()
+            self.proc_ax.autoscale_view()
+            self.proc_ax.figure.canvas.draw_idle()
+        except Exception:
+            pass
+        # clear cached limits
+        self._drag_ylim = None
+    
+    
+    
     def change_curve_color(self, key, new_color):
         if key in self.plotted_lines:
             self.plotted_lines[key].set_color(new_color)
@@ -1847,7 +2109,7 @@ class HDF5Viewer(QMainWindow):
             self.plotted_ax.set_ylim(ymin - y_margin, ymax + y_margin)
             self.canvas_plotted_fig.tight_layout()
             self.canvas_plotted.draw()
-
+    
     def export_ascii_plotted(self):
         visible_keys = [key for key, line in self.plotted_lines.items() if line.get_visible()]
         if not visible_keys:
@@ -2080,3 +2342,4 @@ if __name__ == "__main__":
     viewer = HDF5Viewer()
     viewer.show()
     sys.exit(app.exec_())
+
