@@ -35,8 +35,8 @@ class HDF5Viewer(QMainWindow):
         self.setWindowTitle("FlexPES NEXAFS Plotter")
         self.setGeometry(100, 100, 1250, 600)
 
-        self.VERSION_NUMBER = "1.9.1"
-        self.CREATION_DATETIME = "2025-10-07"
+        self.VERSION_NUMBER = "1.9.2"
+        self.CREATION_DATETIME = "2025-10-11"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
@@ -56,6 +56,7 @@ class HDF5Viewer(QMainWindow):
         self.plotted_lines = {}
         self.custom_labels = {}
 
+        self._sum_serial = 0  # unique id for summed curves in Plotted
         # For Raw Data panel: each dataset's visibility
         self.raw_visibility = {}
 
@@ -308,11 +309,12 @@ class HDF5Viewer(QMainWindow):
         self.plot_buttons_layout = QHBoxLayout()
 
         # Waterfall controls
-        self.waterfall_checkbox = QCheckBox("Waterfall")
-        self.waterfall_checkbox.setChecked(False)
-        self.waterfall_checkbox.stateChanged.connect(self.on_waterfall_toggled)
-        self.plot_buttons_layout.addWidget(self.waterfall_checkbox)
-
+        self.waterfall_mode_combo = QComboBox()
+        self.waterfall_mode_combo.addItems(["None", "Adaptive step", "Uniform step"])
+        self.waterfall_mode_combo.setCurrentIndex(0)
+        self.plot_buttons_layout.addWidget(QLabel("Waterfall:"))
+        self.plot_buttons_layout.addWidget(self.waterfall_mode_combo)
+        self.waterfall_mode_combo.currentIndexChanged.connect(self.recompute_waterfall_layout)
         self.waterfall_slider = QSlider(Qt.Horizontal)
         self.waterfall_slider.setRange(0, 100)
         self.waterfall_slider.setValue(0)
@@ -428,78 +430,144 @@ class HDF5Viewer(QMainWindow):
         checked = (state == Qt.Checked)
         self.waterfall_slider.setEnabled(checked)
         self.waterfall_spin.setEnabled(checked)
-        self.apply_waterfall_shift()
+        self.recompute_waterfall_layout()
 
     def on_waterfall_slider_changed(self, value):
         param = value / 100.0
         self.waterfall_spin.blockSignals(True)
         self.waterfall_spin.setValue(param)
         self.waterfall_spin.blockSignals(False)
-        self.apply_waterfall_shift()
+        self.recompute_waterfall_layout()
 
     def on_waterfall_spin_changed(self, dvalue):
         ival = int(round(dvalue * 100))
         self.waterfall_slider.blockSignals(True)
         self.waterfall_slider.setValue(ival)
         self.waterfall_slider.blockSignals(False)
-        self.apply_waterfall_shift()
-
+        self.recompute_waterfall_layout()
+    def recompute_waterfall_layout(self):
+        """(Re)apply Waterfall based on combobox mode and slider/spin."""
+        # Update controls state based on mode
+        mode = None
+        try:
+            mode = self.waterfall_mode_combo.currentText()
+        except Exception:
+            mode = "None"
+        try:
+            if mode == "Adaptive step":
+                self.waterfall_slider.setEnabled(True)
+                self.waterfall_spin.setEnabled(True)
+            elif mode == "Uniform step":
+                self.waterfall_slider.setEnabled(True)
+                self.waterfall_spin.setEnabled(True)
+            else:
+                self.waterfall_slider.setEnabled(False)
+                self.waterfall_spin.setEnabled(False)
+        except Exception:
+            pass
+        if mode == "None":
+            try:
+                self.restore_original_line_data()
+                self.rescale_plotted_axes()
+            except Exception:
+                pass
+            return
+        # Delegate to apply_waterfall_shift which now checks the mode
+        try:
+            self.apply_waterfall_shift()
+        except Exception as ex:
+            print("apply_waterfall_shift error:", ex)
     def apply_waterfall_shift(self):
-        """
-        SHIFT RULE:
-          - If param=0 => no shift
-          - If param=1 => curve #i's first point is 2% above the previous curve's max
-          - If param in between => partial shift
-        """
+        """Apply/update Waterfall offsets according to selected mode."""
         if not self.plotted_lines:
             return
+        # Determine mode
+        try:
+            mode = self.waterfall_mode_combo.currentText()
+        except Exception:
+            # Backward compatibility: use checkbox if combo not present
+            mode = "Adaptive step" if getattr(self, "waterfall_checkbox", None) and self.waterfall_checkbox.isChecked() else "None"
 
-        # If Waterfall is off => restore original
-        if not self.waterfall_checkbox.isChecked():
+        # Restore originals first for consistent behavior
+        try:
             self.restore_original_line_data()
-            self.rescale_plotted_axes()
-            return
+        except Exception:
+            pass
 
-        alpha = self.waterfall_spin.value()
+        import numpy as np
 
-        # Gather the keys in the same order as the Plotted Data list
+        # Build ordered visible keys
         plotted_keys_in_order = []
         for i in range(self.plotted_list.count()):
             item = self.plotted_list.item(i)
             widget = self.plotted_list.itemWidget(item)
             if widget:
-                plotted_keys_in_order.append(widget.key)
+                key = widget.key
+                line = self.plotted_lines.get(key)
+                if line is not None and line.get_visible():
+                    plotted_keys_in_order.append(key)
 
-        # Revert lines to original data first
-        self.restore_original_line_data()
+        if not plotted_keys_in_order:
+            self.rescale_plotted_axes()
+            return
 
-        prev_max = None
-        for i, key in enumerate(plotted_keys_in_order):
-            if key not in self.plotted_lines:
-                continue
-            line = self.plotted_lines[key]
-            if not line.get_visible():
-                continue
+        if mode == "None":
+            self.rescale_plotted_axes()
+            return
 
-            xdata = line.get_xdata()
-            ydata = line.get_ydata()
+        if mode == "Adaptive step":
+            alpha = float(self.waterfall_spin.value())
+            prev_max = None
+            for i, key in enumerate(plotted_keys_in_order):
+                line = self.plotted_lines[key]
+                xdata = np.asarray(line.get_xdata())
+                ydata = np.asarray(line.get_ydata(), dtype=float)
+                if xdata.size < 1 or ydata.size < 1:
+                    continue
+                if prev_max is None:
+                    mfin0 = np.isfinite(ydata)
+                    prev_max = float(np.max(ydata[mfin0])) if np.any(mfin0) else 0.0
+                    continue
+                if np.isfinite(ydata[0]):
+                    y0 = float(ydata[0])
+                else:
+                    mfin1 = np.isfinite(ydata)
+                    y0 = float(ydata[mfin1][0]) if np.any(mfin1) else 0.0
+                shift_full = (prev_max * 1.02) - y0
+                shift_final = alpha * shift_full
+                new_y = ydata + shift_final
+                line.set_ydata(new_y)
+                mfin2 = np.isfinite(new_y)
+                if np.any(mfin2):
+                    prev_max = float(np.max(new_y[mfin2]))
 
-            if len(xdata) < 1:
-                continue
+        elif mode == "Uniform step":
+            k = float(self.waterfall_spin.value())  # 0..1
+            # Compute global y-range from restored originals
+            ymins, ymaxs = [], []
+            for key in plotted_keys_in_order:
+                line = self.plotted_lines[key]
+                y = np.asarray(line.get_ydata(), dtype=float)
+                m = np.isfinite(y)
+                if np.any(m):
+                    ymins.append(float(np.min(y[m])))
+                    ymaxs.append(float(np.max(y[m])))
+            if not ymins or not ymaxs:
+                self.rescale_plotted_axes()
+                return
+            global_range = max(ymaxs) - min(ymins)
+            if not np.isfinite(global_range) or global_range <= 1e-15:
+                self.rescale_plotted_axes()
+                return
+            delta = k * global_range
+            for idx, key in enumerate(plotted_keys_in_order):
+                if idx == 0:
+                    continue
+                line = self.plotted_lines[key]
+                y = np.asarray(line.get_ydata(), dtype=float)
+                line.set_ydata(y + idx * delta)
 
-            # The first visible curve => sets the baseline max
-            if prev_max is None:
-                prev_max = np.max(ydata)
-                continue
-
-            shift_full = (prev_max * 1.02) - ydata[0]
-            shift_final = alpha * shift_full
-
-            new_y = ydata + shift_final
-            line.set_ydata(new_y)
-
-            prev_max = np.max(new_y)
-
+        # Finally rescale/redraw
         self.rescale_plotted_axes()
 
     def restore_original_line_data(self):
@@ -538,7 +606,10 @@ class HDF5Viewer(QMainWindow):
                 return
             key = visible_keys[0]
 
-        if key in self.plotted_curves:
+                # Use synthetic key for summed curve so it doesn't collide with first component
+        storage_key = f"SUMMED#{self._sum_serial + 1}" if self.chk_sum.isChecked() else key
+
+        if storage_key in self.plotted_curves:
             QMessageBox.warning(self, "Warning", "This curve is already passed for plotting.")
             return
 
@@ -551,18 +622,7 @@ class HDF5Viewer(QMainWindow):
             background = self._compute_background(main_x, main_y)
             subtracted = main_y - background
             norm_mode = self.combo_post_norm.currentText() if self.combo_post_norm.isEnabled() else "None"
-            if norm_mode == "Max":
-                denom = np.max(np.abs(subtracted))
-                if denom != 0:
-                    subtracted = subtracted / denom
-            elif norm_mode == "Jump":
-                denom = subtracted[-1]
-                if denom != 0:
-                    subtracted = subtracted / denom
-            elif norm_mode == "Area":
-                area_val = np.trapz(subtracted, main_x)
-                if area_val != 0:
-                    subtracted = subtracted / area_val
+            subtracted = self._safe_post_normalize(main_x, subtracted, norm_mode)
             main_y = subtracted
             bg_subtracted = True
 
@@ -587,16 +647,16 @@ class HDF5Viewer(QMainWindow):
         if metadata_parts:
             origin_label += " (" + ", ".join(metadata_parts) + ")"
 
-        self.custom_labels[key] = None
+        self.custom_labels[storage_key] = None
         line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>")
-        self.plotted_curves.add(key)
-        self.plotted_lines[key] = line
+        self.plotted_curves.add(storage_key)
+        self.plotted_lines[storage_key] = line
 
         # Store original data so we can revert it for Waterfall
-        self.original_line_data[key] = (main_x.copy(), main_y.copy())
+        self.original_line_data[storage_key] = (main_x.copy(), main_y.copy())
 
         item = QListWidgetItem()
-        widget = CurveListItemWidget(origin_label, line.get_color(), key)
+        widget = CurveListItemWidget(origin_label, line.get_color(), storage_key)
         widget.colorChanged.connect(self.change_curve_color)
         widget.visibilityChanged.connect(self.change_curve_visibility)
         widget.styleChanged.connect(self.change_curve_style)
@@ -606,6 +666,8 @@ class HDF5Viewer(QMainWindow):
 
         self.data_tabs.setCurrentIndex(2)
         self.update_legend()
+        if self.chk_sum.isChecked():
+            self._sum_serial += 1
 
     def on_grid_toggled(self, state):
         if state == Qt.Checked:
@@ -627,7 +689,7 @@ class HDF5Viewer(QMainWindow):
         self.original_line_data.clear()  # Also clear waterfall references
 
         # Reset Waterfall controls
-        self.waterfall_checkbox.setChecked(False)
+        self.waterfall_mode_combo.setCurrentIndex(0)
         self.waterfall_slider.setValue(0)
         self.waterfall_spin.setValue(0.00)
 
@@ -1532,6 +1594,35 @@ class HDF5Viewer(QMainWindow):
                     )
         return None, None
 
+    
+    def _safe_post_normalize(self, x, y, mode):
+        """Robust post-normalization on finite data.
+        mode: "None" | "Max" | "Jump" | "Area"
+        Returns a *copy* of y if scaled, or original y if not applicable.
+        """
+        import numpy as np
+        if mode is None or mode == "None":
+            return y
+        x = np.asarray(x); y = np.asarray(y, dtype=float)
+        mfin = np.isfinite(x) & np.isfinite(y)
+        if not np.any(mfin):
+            return y
+        xf = x[mfin]; yf = y[mfin]
+        def _nonzero(val, eps=1e-15):
+            return (val is not None) and np.isfinite(val) and (abs(val) > eps)
+        try:
+            if mode == "Max":
+                d = float(np.max(np.abs(yf)))
+                if _nonzero(d): return y / d
+            elif mode == "Jump":
+                d = float(yf[-1])
+                if _nonzero(d): return y / d
+            elif mode == "Area":
+                a = float(np.trapz(yf, xf))
+                if _nonzero(a): return y / a
+        except Exception as ex:
+            print("safe_post_norm error:", ex)
+        return y
     def _apply_normalization(self, abs_path, parent, y_data):
         """Divide by the chosen I0 channel – open file briefly (non-locking)."""
         if self.chk_normalize.isChecked():
@@ -1799,27 +1890,27 @@ class HDF5Viewer(QMainWindow):
 
         sub = main_y - background
 
-        # post‑normalisation logic
+        # post-normalisation (robust)
         if self.combo_post_norm.isEnabled():
             mode_norm = self.combo_post_norm.currentText()
+            sub = self._safe_post_normalize(main_x, sub, mode_norm)
+        # finite-only plotting and autoscale
+        import numpy as np
+        _mplot = np.isfinite(sub) & np.isfinite(main_x)
+        if not np.any(_mplot):
+            self.proc_ax.set_xlabel("Photon energy (eV)")
             try:
-                if mode_norm == "Max":
-                    denom = np.max(np.abs(sub))
-                    if denom != 0:
-                        sub = sub / denom
-                elif mode_norm == "Jump":
-                    denom = sub[-1]
-                    if denom != 0:
-                        sub = sub / denom
-                elif mode_norm == "Area":
-                    area = np.trapz(sub, main_x)
-                    if area != 0:
-                        sub = sub / area
-                # None -> nothing
-            except Exception as ex:
-                print("Post-normalisation error:", ex)
+                self.proc_ax.figure.canvas.draw_idle()
+            except Exception:
+                pass
+            return
 
-        self.proc_ax.plot(main_x, sub, label="Background subtracted")
+
+        self.proc_ax.plot(np.asarray(main_x)[_mplot], sub[_mplot], label="Background subtracted")
+        try:
+            self.proc_ax.relim(); self.proc_ax.autoscale_view(); self.proc_ax.figure.tight_layout(); self.canvas_proc.draw_idle()
+        except Exception:
+            pass
         self.proc_ax.set_xlabel("Photon energy (eV)")
     
     def init_manual_mode(self, main_x, main_y, auto_bg=None):

@@ -32,3 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Improved stability of background subtraction toggle (`Subtract background?`) for manual BG in case of summed curves.
+
+
+## [1.9.2] – 2025-10-11
+
+### Added
+- New features of Waterfall representation in the Plotted Data panel
+
+### Fixed
+
+- Fixed bugs in the post-normalization of the summed curves (to Max, Jump and Area).
+- Fixed bug of passing a summed curve and all curves constituting the sum: toggling Waterfall does not remove the very first curve any more.
