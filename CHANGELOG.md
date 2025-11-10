@@ -43,3 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed bugs in the post-normalization of the summed curves (to Max, Jump and Area).
 - Fixed bug of passing a summed curve and all curves constituting the sum: toggling Waterfall does not remove the very first curve any more.
+
+
+## [1.9.3] – 2025-11-10
+
+### Changed
+- Package structure has been completely refactored: the code is now split into several modules (ui.py, data.py, plotting.py, etc) to simplify development.
+- No changes should be noticeable to the end user compared to v1.9.2. 
