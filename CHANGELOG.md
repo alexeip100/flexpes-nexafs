@@ -50,3 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Package structure has been completely refactored: the code is now split into several modules (ui.py, data.py, plotting.py, etc) to simplify development.
 - No changes should be noticeable to the end user compared to v1.9.2. 
+
+
+## [1.9.4] – 2025-11-11
+
+### Added
+- Group loading of any channel (not only TEY, PEY, TFY and PFY) is now enabled by using a combo box "All in channel:"
+
+### Changed
+- Help updated
+- Help is refactored from plotting.py into a dedicated markdown file (help.md in DOCS) for easier updating. 
