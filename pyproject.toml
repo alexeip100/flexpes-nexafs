@@ -17,4 +17,7 @@ flexpes-nexafs = "flexpes_nexafs.app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["flexpes_nexafs","flexpes_nexafs.gui","flexpes_nexafs.gui.widgets","flexpes_nexafs.utils"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["flexpes_nexafs*"]
