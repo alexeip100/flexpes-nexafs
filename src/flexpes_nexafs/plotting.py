@@ -19,12 +19,13 @@ except Exception:
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
+    QTextEdit,
     QApplication, QFileDialog, QTreeWidget, QTreeWidgetItem, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTabWidget, QCheckBox, QComboBox,
     QSpinBox, QMessageBox, QSizePolicy, QDialog, QListWidgetItem, QInputDialog, QTextBrowser
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
+from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor, QTextOption
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -455,165 +456,35 @@ class PlottingMixin:
         QMessageBox.information(self, "About FlexPES NEXAFS Plotter", info_text)
 
     def show_usage_info(self):
-        usage_text = """
-        <h2>FlexPES NEXAFS Plotter</h2>
-        
-        <h3><b>Overview:</b></h3>
-        <p>
-          This application enables you to open HDF5 files containing NEXAFS spectra
-          recorded at the FlexPES beamline (MAX IV Laboratory) and perform
-          pre-processing, visualization, and export of raw and processed data.
-        </p>
-        
-        <h3>File Controls (Top Left Panel):</h3>
-        <ul>
-          <li><b>Open HDF5 File:</b> Load one or more HDF5 files containing
-              NEXAFS data.</li>
-          <li><b>Close all:</b> Close all currently opened files.</li>
-          <li><b>Clear all:</b> Remove all loaded data and reset the interface.</li>
-          <li><b>Help:</b> Opens a menu with “Usage” and “About”.</li>
-        </ul>
-        
-        <h3>File Tree Panel:</h3>
-        <p>
-          Displays the hierarchical structure of loaded HDF5 files. Expand groups to
-          view datasets. Tick the checkboxes on 1-D datasets (typically under the
-          <code>measurement</code> group) to include or exclude curves from plots.
-        </p>
-        
-        <h3>Tabs (Right Panel):</h3>
-        <ol>
-        
-          <!-- RAW DATA TAB -->
-          <li><b>Raw Data Tab</b>
-            <ul>
-        
-              <li><i>Data Plot:</i>
-                Shows raw spectra. Multiple curves can be shown at once.
-              </li>
-        
-              <li><i>All in channel:</i>
-                <b>checkbox</b> + <b>combobox</b> of channel names.<br/>
-                The combobox lists <u>unique channel names</u> found across all opened
-                files (last path component only).<br/>
-                <b>Checked:</b> loads the selected channel across <u>all entries</u>.
-                Changing the selection clears the previous channel group and loads the
-                new one.<br/>
-                <b>Unchecked:</b> clears the selected channel group from plot and tree.
-                Changing the selection while unchecked does not load data.
-              </li>
-        
-              <li><i>Channel Checkboxes:</i>
-                <b>All TEY</b>, <b>All PEY</b>, <b>All TFY</b>, <b>All PFY</b>.<br/>
-                Family toggles by detector type. Each checkbox shows or hides its
-                family across entries. Can be combined with “All in channel” and with
-                item checkboxes in the File Tree.
-              </li>
-        
-              <li><i>Data Tree (right of plot):</i>
-                Lists raw data items for inspection. Datasets are grouped into
-                energy-dependent “regions” (e.g., absorption edges). Group checkboxes
-                allow quick selection or deselection of entire edge regions.
-              </li>
-        
-              <li><i>Scalar Display:</i>
-                Shows scalar or textual metadata values for the selected items beneath
-                the plot canvas.
-              </li>
-            </ul>
-          </li>
-        
-          <!-- PROCESSED DATA TAB -->
-          <li><b>Processed Data Tab</b>
-            <ul>
-        
-              <li><i>Normalization Controls:</i>
-                Normalize spectra by a selected I<sub>0</sub> channel
-                (default: <code>b107a_em_03_ch2</code>). Useful for mitigating
-                incident-flux variations.
-              </li>
-        
-              <li><i>Summing Option:</i>
-                Sum multiple datasets (e.g., repeated sweeps) to improve statistics.
-                The sum can be passed onward like any other curve.
-              </li>
-        
-              <li><i>Background Settings:</i>
-                Mode = <b>None</b>, <b>Automatic</b>, or <b>Manual</b>.<br/>
-                • <b>Polynomial degree</b>: order of the background fit.<br/>
-                • <b>Pre-edge %</b>: pre-edge range used for the fit.<br/>
-                • <b>Automatic:</b> adds a constraint so the derivative at the end of
-                  the background matches the slope of the data.<br/>
-                • <b>Manual:</b> adjust anchor points interactively with the mouse
-                  if Automatic fails.
-              </li>
-        
-              <li><i>Subtraction checkbox:</i>
-                Visualize the background-subtracted curve. Requires a single dataset
-                (or a sum) to be selected.
-              </li>
-        
-              <li><i>Extra normalization:</i>
-                Post-BG normalization: <b>None</b>, <b>Max</b>, <b>Jump</b>, <b>Area</b>.<br/>
-                • <b>Max</b>: scale to the maximum value.<br/>
-                • <b>Jump</b>: scale to the absorption jump at the last point.<br/>
-                • <b>Area</b>: scale to the integrated area under the curve.
-              </li>
-        
-              <li><i>PASS button:</i>
-                When a curve is in its “final” processed state (normalized, optionally
-                summed, with suitable background), send it to the <b>Plotted Data</b>
-                tab for presentation and export.
-                The <b>Export ASCII</b> button saves the processed curve as CSV.
-              </li>
-            </ul>
-          </li>
-        
-          <!-- PLOTTED DATA TAB -->
-          <li><b>Plotted Data Tab</b>
-            <ul>
-        
-              <li><i>Interactive Plot Canvas:</i>
-                Embedded Matplotlib view with zoom, pan, and save. Energy (x-axis) is
-                auto-detected from common fields (e.g.,
-                <code>pcap_energy_av</code>, <code>mono_traj_energy</code>).
-                Curve labels include entry + channel for clarity.
-              </li>
-        
-              <li><i>Waterfall slider:</i>
-                If more than one curve is plotted, enable a waterfall view and adjust
-                vertical spacing for separation.
-              </li>
-        
-              <li><i>Curve List:</i>
-                Side panel listing plotted curves. Adjust color, line style, and
-                visibility per curve.
-              </li>
-        
-              <li><i>Interactive Legend:</i>
-                Toggle legend visibility; drag to reposition. You can rename legend
-                entries if your build enables renaming controls.
-              </li>
-        
-              <li><i>Export / Clear:</i>
-                Export the plotted data (e.g., CSV of x/y) and save figures (e.g.,
-                PNG). Clear removes all plotted curves from this tab.
-              </li>
-            </ul>
-          </li>
-        
-        </ol>
+        """Show the Help->Usage dialog populated from docs/help.md.
+
+        The help text is stored in the package as Markdown and converted
+        to HTML via :func:`get_usage_html` so that only a single source
+        of truth needs to be maintained.
         """
+        try:
+            usage_html = get_usage_html()
+        except Exception:
+            usage_html = "<p><b>Help text could not be loaded.</b></p>"
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("About FlexPES NEXAFS Plotter")
-        dlg.resize(600, 500)
+        dlg.setWindowTitle("Usage – FlexPES NEXAFS Plotter")
+        dlg.resize(800, 600)
+        dlg.setSizeGripEnabled(True)  # optional: shows a size grip in the corner
+
         layout = QVBoxLayout(dlg)
         browser = QTextBrowser()
-        browser.setStyleSheet("font-size: 16px;")
-        browser.setHtml(usage_text)
+        
+        browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        browser.setLineWrapMode(QTextEdit.WidgetWidth)
+        browser.setWordWrapMode(QTextOption.WordWrap)
+        
+        browser.setStyleSheet("font-size: 14px;")
+        # QTextBrowser expects HTML; get_usage_html() already returns HTML
+        browser.setHtml(usage_html)
         layout.addWidget(browser)
         dlg.exec_()
+
 
     def clear_all_except_plotted(self):
         if hasattr(self, "tree"):

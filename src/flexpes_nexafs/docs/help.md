@@ -71,7 +71,9 @@ Expand groups to view datasets. Tick checkboxes on **1‑D datasets**
 - **Waterfall slider:** If more than one curve is plotted, enable waterfall
   view and adjust vertical spacing.
 - **Curve List:** Side panel that lists plotted curves. Adjust color, line
-  style, and visibility per curve.
+  style, and visibility per curve. The curve list is interactive:
+  dragging curves up or down with the mouse instantly updates the plot and reorders the legend
+  accordingly upon release (most noticeable in the Waterfall representation).
 - **Legend:** Show/hide; drag to reposition. If enabled in your build,
   you can rename legend entries.
 - **Export / Clear:** Export plotted data (e.g., CSV of x/y) and save

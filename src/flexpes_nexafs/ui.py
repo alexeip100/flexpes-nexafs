@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QSpinBox, QMessageBox, QSizePolicy, QSplitter,
     QInputDialog, QColorDialog, QListWidget, QListWidgetItem, QDialog,
     QMenu, QTextBrowser, QSlider, QDoubleSpinBox
-)
+, QAbstractItemView)
 
 # ---- Compatibility shims (Phase 2b) ----
 def _proc_robust_polyfit_on_normalized(self, xs, ys, deg, x_eval):
@@ -59,13 +59,83 @@ from .processing import ProcessingMixin
 from .plotting import PlottingMixin
 from .export import ExportMixin
 class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWindow):
+
+    def on_plotted_list_reordered(self):
+        """After drag-drop: recompute Waterfall using list order, rebuild legend, redraw."""
+        # 1) Restore original data (if helper exists) so Waterfall applies cleanly
+        try:
+            if hasattr(self, "restore_original_line_data"):
+                self.restore_original_line_data()
+        except Exception:
+            pass
+
+        # 2) Re-apply Waterfall (reuse existing implementation)
+        try:
+            if hasattr(self, "recompute_waterfall_layout"):
+                self.recompute_waterfall_layout()
+            elif hasattr(self, "apply_waterfall_shift"):
+                self.apply_waterfall_shift()
+            else:
+                if hasattr(self, "rescale_plotted_axes"):
+                    self.rescale_plotted_axes()
+        except Exception:
+            pass
+
+        # 3) Rebuild the legend to follow the Plotted list order (visible lines only)
+        try:
+            order = []
+            if hasattr(self, "plotted_list") and self.plotted_list is not None:
+                for i in range(self.plotted_list.count()):
+                    item = self.plotted_list.item(i)
+                    widget = self.plotted_list.itemWidget(item)
+                    if widget is not None and hasattr(widget, "key"):
+                        order.append(widget.key)
+
+            handles, labels = [], []
+            for key in order:
+                line = getattr(self, "plotted_lines", {}).get(key)
+                if line is not None and line.get_visible():
+                    handles.append(line)
+                    lbl = None
+                    try:
+                        lbl = getattr(self, "custom_labels", {}).get(key)
+                    except Exception:
+                        lbl = None
+                    if not lbl:
+                        lbl = line.get_label() or "<select curve name>"
+                    line.set_label(lbl)
+                    labels.append(lbl)
+
+            if not handles and hasattr(self, "plotted_ax"):
+                # Fallback: use visible lines if list order unavailable
+                handles = [ln for ln in self.plotted_ax.lines if ln.get_visible()]
+                labels = [ln.get_label() for ln in handles]
+
+            if hasattr(self, "plotted_ax"):
+                leg = self.plotted_ax.legend(handles, labels)
+                try:
+                    if leg:
+                        leg.set_draggable(True)
+                        for t in leg.get_texts():
+                            t.set_picker(True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 4) Redraw
+        try:
+            if hasattr(self, "canvas_plotted"):
+                self.canvas_plotted.draw()
+        except Exception:
+            pass
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FlexPES NEXAFS Plotter")
         self.setGeometry(100, 100, 1250, 600)
 
-        self.VERSION_NUMBER = "1.9.4"
-        self.CREATION_DATETIME = "2025-11-11"
+        self.VERSION_NUMBER = "1.9.5"
+        self.CREATION_DATETIME = "2025-11-12"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
@@ -396,6 +466,13 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         self.plotted_list = QListWidget()
         self.plotted_list.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.plotted_splitter.addWidget(self.plotted_list)
+        # Enable drag & drop reordering; replot on drop
+        self.plotted_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.plotted_list.setDefaultDropAction(Qt.MoveAction)
+        try:
+            self.plotted_list.model().rowsMoved.connect(lambda *args: self.on_plotted_list_reordered())
+        except Exception:
+            pass
         self.plotted_splitter.setStretchFactor(0, 64)
         self.plotted_splitter.setStretchFactor(1, 36)
         self.data_tabs.addTab(self.plotted_splitter, "Plotted Data")
@@ -618,4 +695,3 @@ def launch():
                     self.combo_all_channel.blockSignals(False)
         except Exception:
             pass
-

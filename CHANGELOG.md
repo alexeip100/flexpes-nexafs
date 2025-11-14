@@ -54,3 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package structure has been completely refactored: the code is now split into several modules (ui.py, data.py, plotting.py, etc) to simplify development.
 - Help updated
 - Help is refactored from plotting.py into a dedicated markdown file (help.md in DOCS) for easier updating. 
+
+## [1.9.5] – 2025-11-12
+
+### Added
+- The curve list in the “Plotted Data” panel is now interactive: dragging curves up or down with the mouse instantly updates the plot and reorders the legend accordingly upon release (most noticeable in the Waterfall representation).
+
