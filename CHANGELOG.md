@@ -71,3 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "Help"->"Usage" is updated. 
 
 
+## [1.9.7] – 2025-11-15
+
+### Fixed
+- A bug crashing the application is fixed.
+

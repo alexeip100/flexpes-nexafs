@@ -271,8 +271,7 @@ class ProcessingMixin:
         if self.combo_post_norm.isEnabled():
             mode_norm = self.combo_post_norm.currentText()
             sub = _proc_safe_post_normalize(self, main_x, sub, mode_norm)
-        # finite-only plotting and autoscale
-        import numpy as np
+        # finite-only plotting and autoscale        
         _mplot = np.isfinite(sub) & np.isfinite(main_x)
         if not np.any(_mplot):
             self.proc_ax.set_xlabel("Photon energy (eV)")
