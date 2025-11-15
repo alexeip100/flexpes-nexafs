@@ -17,6 +17,7 @@ class CurveListItemWidget(QWidget):
     colorChanged = pyqtSignal(str, str)        # key, new_color
     visibilityChanged = pyqtSignal(str, bool)  # key, visible
     styleChanged = pyqtSignal(str, str, float) # key, lineStyle, lineSize
+    removeRequested = pyqtSignal(str)          # key
 
     def __init__(self, label, initial_color, key, parent=None):
         super().__init__(parent)
@@ -26,6 +27,9 @@ class CurveListItemWidget(QWidget):
         self.color_button = QPushButton()
         self.color_button.setFixedSize(20, 20)
         self.color_button.setStyleSheet(f"background-color: {initial_color}")
+        self.remove_button = QPushButton("✕")
+        self.remove_button.setFixedSize(20, 20)
+        self.remove_button.setToolTip("Remove this curve from the plot")
 
         self.check_box = QCheckBox()
         self.check_box.setChecked(True)
@@ -45,6 +49,7 @@ class CurveListItemWidget(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
+        layout.addWidget(self.remove_button)
         layout.addWidget(self.color_button)
         layout.addWidget(self.check_box)
         layout.addWidget(self.style_combo)
@@ -52,6 +57,7 @@ class CurveListItemWidget(QWidget):
         layout.addWidget(self.label)
 
         # --- Connections ---
+        self.remove_button.clicked.connect(self.on_remove_clicked)
         self.color_button.clicked.connect(self.on_color_button_clicked)
         self.check_box.stateChanged.connect(self.on_visibility_changed)
         self.style_combo.currentTextChanged.connect(self.on_style_changed)
@@ -67,6 +73,10 @@ class CurveListItemWidget(QWidget):
             new_color = color.name()
             self.color_button.setStyleSheet(f"background-color: {new_color}")
             self.colorChanged.emit(self.key, new_color)
+
+    def on_remove_clicked(self):
+        """Request removal of this curve via signal."""
+        self.removeRequested.emit(self.key)
 
     def on_visibility_changed(self, state):
         """Emit signal when visibility toggled."""

@@ -134,8 +134,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         self.setWindowTitle("FlexPES NEXAFS Plotter")
         self.setGeometry(100, 100, 1250, 600)
 
-        self.VERSION_NUMBER = "1.9.5"
-        self.CREATION_DATETIME = "2025-11-12"
+        self.VERSION_NUMBER = "1.9.6"
+        self.CREATION_DATETIME = "2025-11-15"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
@@ -365,7 +365,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         self.proc_controls_bottom_layout.addWidget(QLabel("Pre-edge (%):"))
         self.spin_preedge = QSpinBox()
         self.spin_preedge.setRange(0, 100)
-        self.spin_preedge.setValue(5)
+        self.spin_preedge.setValue(12)
         self.proc_controls_bottom_layout.addWidget(self.spin_preedge)
 
         self.chk_show_without_bg = QCheckBox("Subtract background?")
@@ -440,11 +440,14 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         self.waterfall_spin.valueChanged.connect(self.on_waterfall_spin_changed)
         self.plot_buttons_layout.addWidget(self.waterfall_spin)
 
-        # New Grid checkbox added next to the waterfall controls
-        self.grid_checkbox = QCheckBox("Grid")
-        self.grid_checkbox.setChecked(False)
-        self.grid_checkbox.stateChanged.connect(self.on_grid_toggled)
-        self.plot_buttons_layout.addWidget(self.grid_checkbox)
+        # Grid density selector next to the waterfall controls
+        self.grid_label = QLabel("Grid:")
+        self.plot_buttons_layout.addWidget(self.grid_label)
+        self.grid_mode_combo = QComboBox()
+        self.grid_mode_combo.addItems(["None", "Coarse", "Fine", "Finest"])
+        self.grid_mode_combo.setCurrentText("None")
+        self.grid_mode_combo.currentIndexChanged.connect(self.on_grid_toggled)
+        self.plot_buttons_layout.addWidget(self.grid_mode_combo)
 
         # Stretch pushes the Export/ Clear buttons to the right
         self.plot_buttons_layout.addStretch()

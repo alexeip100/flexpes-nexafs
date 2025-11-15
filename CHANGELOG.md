@@ -60,3 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - The curve list in the “Plotted Data” panel is now interactive: dragging curves up or down with the mouse instantly updates the plot and reorders the legend accordingly upon release (most noticeable in the Waterfall representation).
 
+
+## [1.9.6] – 2025-11-15
+
+### Added
+- It is possible now to remove curves from the list in the "Plotted Data" panel by clicking a "Cross" button in front of any specific curve, with corresponding adjustment of the plot.
+
+### Changed
+- "Grid" check box is replaced with the "Grid:" combo box, which allows to apply grids with different line density.
+- "Help"->"Usage" is updated. 
+
+

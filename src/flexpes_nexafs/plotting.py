@@ -9,14 +9,18 @@ import csv
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import AutoMinorLocator
 plt.ioff()
 try:
     from .widgets.curve_item import CurveListItemWidget
 except Exception:
     CurveListItemWidget = None
-
-
-from datetime import datetime
+try:
+    from .widgets.curve_item import CurveTreeWidgetItem
+except Exception:
+    CurveTreeWidgetItem = None
+    
+from datetime import datetime    
 
 from PyQt5.QtWidgets import (
     QTextEdit,
@@ -26,6 +30,32 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor, QTextOption
+
+class HelpBrowser(QTextBrowser):
+    """QTextBrowser subclass that keeps text wrapping responsive on resize.
+
+    This variant uses a FixedPixelWidth wrap mode and updates the wrap
+    width on each resize event. This tends to behave consistently across
+    different Qt / PyQt builds and platforms.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Wrap at a fixed pixel width that we'll update on resize
+        self.setLineWrapMode(QTextEdit.FixedPixelWidth)
+        self.setWordWrapMode(QTextOption.WordWrap)
+        # We want wrapping instead of horizontal scrolling
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Keep the wrap column in sync with the viewport width
+        try:
+            self.setLineWrapColumnOrWidth(self.viewport().width())
+        except Exception:
+            # If anything goes wrong, we just fall back to default behavior.
+            pass
+
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -66,44 +96,50 @@ def _basic_md_to_html(md: str) -> str:
     text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"\*([^*]+)\*", r"<i>\1</i>", text)
 
-    lines, in_ul, in_ol = [], False, False
-    for raw in text.splitlines():
-        line = raw.rstrip()
-
+    lines = []
+    in_ul = False
+    in_ol = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if line.startswith("# "):
-            if in_ul: lines.append("</ul>"); in_ul=False
-            if in_ol: lines.append("</ol>"); in_ol=False
-            lines.append(f"<h1>{line[2:].strip()}</h1>"); continue
-        if line.startswith("## "):
-            if in_ul: lines.append("</ul>"); in_ul=False
-            if in_ol: lines.append("</ol>"); in_ol=False
-            lines.append(f"<h2>{line[3:].strip()}</h2>"); continue
-        if line.startswith("### "):
-            if in_ul: lines.append("</ul>"); in_ul=False
-            if in_ol: lines.append("</ol>"); in_ol=False
-            lines.append(f"<h3>{line[4:].strip()}</h3>"); continue
-
-        if line.strip().startswith("- "):
+            if in_ul:
+                lines.append("</ul>"); in_ul = False
+            if in_ol:
+                lines.append("</ol>"); in_ol = False
+            lines.append(f"<h1>{line[2:].strip()}</h1>")
+        elif line.startswith("## "):
+            if in_ul:
+                lines.append("</ul>"); in_ul = False
+            if in_ol:
+                lines.append("</ol>"); in_ol = False
+            lines.append(f"<h2>{line[3:].strip()}</h2>")
+        elif line.startswith("### "):
+            if in_ul:
+                lines.append("</ul>"); in_ul = False
+            if in_ol:
+                lines.append("</ol>"); in_ol = False
+            lines.append(f"<h3>{line[4:].strip()}</h3>")
+        elif line.startswith("- ") or line.startswith("* "):
             if not in_ul:
-                if in_ol: lines.append("</ol>"); in_ol=False
-                lines.append("<ul>"); in_ul=True
-            lines.append(f"<li>{line.strip()[2:].strip()}</li>"); continue
-
-        import re as _re
-        if _re.match(r"\s*\d+\.\s+", line):
+                if in_ol:
+                    lines.append("</ol>"); in_ol = False
+                lines.append("<ul>"); in_ul = True
+            lines.append(f"<li>{line[2:].strip()}</li>")
+        elif any(line.startswith(f"{n}. ") for n in range(1, 10)):
             if not in_ol:
-                if in_ul: lines.append("</ul>"); in_ul=False
-                lines.append("<ol>"); in_ol=True
-            item = _re.sub(r"^\s*\d+\.\s+", "", line).strip()
-            lines.append(f"<li>{item}</li>"); continue
-
-        if not line.strip():
-            if in_ul: lines.append("</ul>"); in_ul=False
-            if in_ol: lines.append("</ol>"); in_ol=False
-            lines.append("<p></p>"); continue
-
-        lines.append(f"<p>{line}</p>")
-
+                if in_ul:
+                    lines.append("</ul>"); in_ul = False
+                lines.append("<ol>"); in_ol = True
+            item_text = line[line.find('.')+1:].strip()
+            lines.append(f"<li>{item_text}</li>")
+        elif line == "":
+            lines.append("<br>")
+        else:
+            if in_ul:
+                lines.append("</ul>"); in_ul = False
+            if in_ol:
+                lines.append("</ol>"); in_ol = False
+            lines.append(f"<p>{line}</p>")
     if in_ul: lines.append("</ul>")
     if in_ol: lines.append("</ol>")
     return "\n".join(lines)
@@ -314,7 +350,25 @@ class PlottingMixin:
             bg_subtracted = True
 
         parts = key.split("##", 1)
-        origin_label = "Summed Curve" if self.chk_sum.isChecked() else (parts[1] if len(parts) == 2 else key)
+        if self.chk_sum.isChecked():
+            origin_label = "Summed Curve"
+        else:
+            if len(parts) == 2:
+                path = parts[1]
+                # Typical path looks like "entryXXXX/measurement/<channel_name>".
+                # We want to drop the redundant "measurement" and show
+                # "entryXXXX: <channel_name>" in the Plotted Data list.
+                path_parts = path.split("/")
+                if len(path_parts) >= 3 and path_parts[1] == "measurement":
+                    entry = path_parts[0]
+                    channel_name = path_parts[-1]
+                    origin_label = f"{entry}: {channel_name}"
+                else:
+                    # Fallback: use the original path if it does not match the
+                    # expected pattern.
+                    origin_label = path
+            else:
+                origin_label = key
 
         metadata_parts = []
         if bg_subtracted and self.combo_post_norm.isEnabled():
@@ -346,6 +400,9 @@ class PlottingMixin:
             widget.colorChanged.connect(self.change_curve_color)
             widget.visibilityChanged.connect(self.change_curve_visibility)
             widget.styleChanged.connect(self.change_curve_style)
+            # Allow removing a plotted curve from the list/plot.
+            if hasattr(widget, "removeRequested"):
+                widget.removeRequested.connect(self.on_curve_remove_requested)
             item.setSizeHint(widget.sizeHint())
             self.plotted_list.addItem(item)
             self.plotted_list.setItemWidget(item, widget)
@@ -358,9 +415,77 @@ class PlottingMixin:
         if self.chk_sum.isChecked():
             self._sum_serial = getattr(self, "_sum_serial", 0) + 1
 
-    def on_grid_toggled(self, state):
-        self.plotted_ax.grid(state == Qt.Checked)
-        self.canvas_plotted.draw()
+    def on_grid_toggled(self, index):
+        """Handle change of grid density from combo box."""
+        try:
+            self._apply_grid_mode()
+        except Exception:
+            pass
+
+
+    def _apply_grid_mode(self, mode_text=None):
+        """Apply grid mode ('None', 'Coarse', 'Fine', 'Finest') to plotted_ax.
+
+        'Coarse' reproduces the original checkbox behavior (major-grid only).
+        'Fine' uses 1 minor division (2× finer), 'Finest' uses 5 divisions
+        (~5× finer)."""
+        ax = getattr(self, 'plotted_ax', None)
+        if ax is None:
+            return
+
+        # Determine mode from combo if not provided
+        if mode_text is None:
+            try:
+                combo = getattr(self, 'grid_mode_combo', None)
+                if combo is not None:
+                    mode_text = combo.currentText()
+            except Exception:
+                mode_text = None
+        if not mode_text:
+            mode_text = 'None'
+        mode = str(mode_text).strip().lower()
+
+        # Start from a clean grid state
+        try:
+            ax.grid(False, which='both')
+        except Exception:
+            pass
+
+        if mode == 'none':
+            try:
+                ax.minorticks_off()
+            except Exception:
+                pass
+        else:
+            # Always show major grid lines for any non-'None' mode
+            try:
+                ax.grid(True, which='major')
+            except Exception:
+                pass
+
+            # For 'Coarse' we keep only major grid (original behavior)
+            if mode == 'coarse':
+                try:
+                    ax.minorticks_off()
+                except Exception:
+                    pass
+            else:
+                # 'Fine' and 'Finest': add minor grid with more divisions
+                n = 2 if mode == 'fine' else 5
+                try:
+                    ax.minorticks_on()
+                    ax.xaxis.set_minor_locator(AutoMinorLocator(n))
+                    ax.yaxis.set_minor_locator(AutoMinorLocator(n))
+                    ax.grid(True, which='both')
+                except Exception:
+                    pass
+
+        # Redraw canvas if available
+        try:
+            if hasattr(self, 'canvas_plotted'):
+                self.canvas_plotted.draw()
+        except Exception:
+            pass
 
     def clear_plotted_data(self):
         self.plotted_ax.clear()
@@ -379,10 +504,13 @@ class PlottingMixin:
         self.waterfall_slider.setValue(0)
         self.waterfall_spin.setValue(0.00)
 
-        # Reset Grid option
-        self.grid_checkbox.setChecked(False)
-        self.plotted_ax.grid(False)
-        self.canvas_plotted.draw()
+        # Reset Grid option to 'None'
+        try:
+            if hasattr(self, "grid_mode_combo"):
+                self.grid_mode_combo.setCurrentText("None")
+            self._apply_grid_mode("None")
+        except Exception:
+            pass
 
     def recursive_uncheck(self, item, col):
         if not item:
@@ -473,7 +601,7 @@ class PlottingMixin:
         dlg.setSizeGripEnabled(True)  # optional: shows a size grip in the corner
 
         layout = QVBoxLayout(dlg)
-        browser = QTextBrowser()
+        browser = HelpBrowser()
         
         browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         browser.setLineWrapMode(QTextEdit.WidgetWidth)
@@ -1023,6 +1151,81 @@ class PlottingMixin:
             self.update_legend()
             self.canvas_plotted.draw()
 
+    def on_curve_remove_requested(self, key):
+        """Handle request to remove a plotted curve from list and axes.
+
+        Shows a confirmation dialog and, on acceptance, removes the
+        corresponding line and updates Waterfall / legend layout.
+        """
+        # Confirm with the user
+        reply = QMessageBox.question(
+            self,
+            "Remove curve",
+            "Do you want to remove this curve?",
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Ok:
+            return
+
+        # Remove from stored structures
+        line = self.plotted_lines.pop(key, None) if hasattr(self, "plotted_lines") else None
+        if line is not None:
+            try:
+                line.remove()
+            except Exception:
+                pass
+
+        if hasattr(self, "plotted_curves"):
+            try:
+                self.plotted_curves.discard(key)
+            except Exception:
+                pass
+
+        if hasattr(self, "original_line_data"):
+            try:
+                self.original_line_data.pop(key, None)
+            except Exception:
+                pass
+
+        if hasattr(self, "custom_labels"):
+            try:
+                self.custom_labels.pop(key, None)
+            except Exception:
+                pass
+
+        # Remove the corresponding list item
+        if hasattr(self, "plotted_list"):
+            try:
+                for i in range(self.plotted_list.count()):
+                    item = self.plotted_list.item(i)
+                    widget = self.plotted_list.itemWidget(item)
+                    if widget and getattr(widget, "key", None) == key:
+                        self.plotted_list.takeItem(i)
+                        break
+            except Exception:
+                pass
+
+        # Recompute Waterfall layout (which also rescales axes)
+        try:
+            if hasattr(self, "recompute_waterfall_layout"):
+                self.recompute_waterfall_layout()
+            else:
+                # Fallback: at least rescale axes and redraw
+                if hasattr(self, "rescale_plotted_axes"):
+                    self.rescale_plotted_axes()
+                if hasattr(self, "canvas_plotted"):
+                    self.canvas_plotted.draw()
+        except Exception:
+            pass
+
+        # Update legend to reflect remaining curves
+        try:
+            if hasattr(self, "update_legend"):
+                self.update_legend()
+        except Exception:
+            pass
+
     def rescale_plotted_axes(self):
         x_all, y_all = [], []
         for key, line in self.plotted_lines.items():
@@ -1039,6 +1242,11 @@ class PlottingMixin:
             y_margin = (ymax - ymin) * 0.05 if (ymax - ymin) else 1
             self.plotted_ax.set_xlim(xmin - x_margin, xmax + x_margin)
             self.plotted_ax.set_ylim(ymin - y_margin, ymax + y_margin)
+            # Re-apply grid mode after rescaling axes
+            try:
+                self._apply_grid_mode()
+            except Exception:
+                pass
             self.canvas_plotted_fig.tight_layout()
             self.canvas_plotted.draw()
 

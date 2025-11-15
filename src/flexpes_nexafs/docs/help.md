@@ -74,13 +74,10 @@ Expand groups to view datasets. Tick checkboxes on **1‑D datasets**
   style, and visibility per curve. The curve list is interactive:
   dragging curves up or down with the mouse instantly updates the plot and reorders the legend
   accordingly upon release (most noticeable in the Waterfall representation).
+  Each curve can be removed from the "Plotted" list by pressing small cross in front of the curve.
 - **Legend:** Show/hide; drag to reposition. If enabled in your build,
   you can rename legend entries.
+- **Grid:** Grid with different line density can be applied to the plot.
 - **Export / Clear:** Export plotted data (e.g., CSV of x/y) and save
   figures (e.g., PNG). **Clear** removes all plotted curves in this tab.
 
-## Tips
-- Use **All in channel** to compare one channel across many entries quickly.
-- If the x‑axis looks wrong, check that energy fields exist at entry or
-  measurement level in the HDF5 file.
-- Tree checkboxes let you refine the visible set after using group toggles.
