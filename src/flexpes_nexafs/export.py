@@ -14,7 +14,23 @@ from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
 
 class ExportMixin:
     def export_ascii_plotted(self):
-        visible_keys = [key for key, line in self.plotted_lines.items() if line.get_visible()]
+        # Determine visible curves in the *current* plotted-list order
+        visible_keys = []
+        try:
+            if hasattr(self, "plotted_list") and self.plotted_list is not None:
+                for row in range(self.plotted_list.count()):
+                    item = self.plotted_list.item(row)
+                    if item is None:
+                        continue
+                    key = item.data(Qt.UserRole)
+                    if key in self.plotted_lines and self.plotted_lines[key].get_visible():
+                        visible_keys.append(key)
+        except Exception:
+            visible_keys = []
+
+        # Fallback: use insertion order from plotted_lines if needed
+        if not visible_keys:
+            visible_keys = [key for key, line in self.plotted_lines.items() if line.get_visible()]
         if not visible_keys:
             QMessageBox.warning(self, "Export ASCII", "No visible curves to export.")
             return
@@ -189,4 +205,3 @@ class ExportMixin:
             "y_final"  : y_final,
             "norm_mode": norm_mode,   # ← pass the choice upstream
         }
-

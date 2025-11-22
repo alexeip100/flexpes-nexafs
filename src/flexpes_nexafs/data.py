@@ -392,50 +392,75 @@ class DataMixin:
 
 
 def lookup_energy(viewer, abs_path: str, parent: str, length: int):
+    """
+    Return the energy axis for a given 1D dataset.
+
+    Preference order:
+    1) An explicit x/energy dataset under the same parent group, e.g.
+       - f"{parent}/x"
+       - f"{parent}/energy"
+       - f"{parent}/photon_energy"
+    2) Fallback to original behaviour using "pcap_energy_av" or "mono_traj_energy"
+       either under the same parent or at the file root.
+    3) If none found, return a simple arange(length).
+    """
     cache = getattr(viewer, "energy_cache", None)
-    if cache is None: cache = viewer.energy_cache = {}
+    if cache is None:
+        cache = viewer.energy_cache = {}
     key = f"{abs_path}::{parent}"
-    if key in cache: return cache[key][0]
+    if key in cache:
+        return cache[key][0]
+
     x = None
     try:
         with viewer._open_h5_read(abs_path) as f:
-            cands = []
-            if parent: cands += [f"{parent}/pcap_energy_av", f"{parent}/mono_traj_energy"]
-            else: cands += ["pcap_energy_av","mono_traj_energy"]
-            for p in cands:
-                try:
-                    arr = f[p][...]
-                    try: arr = arr.squeeze()
-                    except Exception: pass
-                    if getattr(arr,"size",0)>0:
-                        x = arr; break
-                except Exception: continue
-    except Exception:
-        x = None
-    if x is None: x = np.arange(length)
-    cache[key]=(x, False)
-    return x
-
-    def collect_available_1d_datasets(self):
-        """Return a sorted list of unique relative paths for all 1D datasets across opened HDF5 files.
-        Relative path is with respect to the group (no leading slash)."""
-        import h5py
-        rels = set()
-        files = list(getattr(self, "hdf5_files", {}).keys()) if hasattr(self, "hdf5_files") else []
-        for abs_path in files:
-            try:
-                with self._open_h5_read(abs_path) as f:
-                    def _visit(name, obj):
+            # 1) Explicit x/energy datasets near the parent
+            search_roots = []
+            if parent:
+                search_roots.append(parent)
+            else:
+                search_roots.append("")
+            candidates = ("x", "energy", "photon_energy")
+            for root in search_roots:
+                for name in candidates:
+                    p = f"{root}/{name}" if root else name
+                    try:
+                        arr = f[p][...]
                         try:
-                            if isinstance(obj, h5py.Dataset):
-                                shp = tuple(getattr(obj, "shape", ()) or ())
-                                if len(shp) == 1:
-                                    s = name.lstrip("/")
-                                    rels.add(s)
+                            arr = arr.squeeze()
                         except Exception:
                             pass
-                    f.visititems(_visit)
-            except Exception:
-                pass
-        out = sorted(rels, key=lambda s: s.lower())
-        return out
+                        if getattr(arr, "size", 0) > 0:
+                            x = arr
+                            break
+                    except Exception:
+                        continue
+                if x is not None:
+                    break
+
+            # 2) Fallback to original pcap/mono_traj search
+            if x is None:
+                cands = []
+                if parent:
+                    cands += [f"{parent}/pcap_energy_av", f"{parent}/mono_traj_energy"]
+                else:
+                    cands += ["pcap_energy_av", "mono_traj_energy"]
+                for p in cands:
+                    try:
+                        arr = f[p][...]
+                        try:
+                            arr = arr.squeeze()
+                        except Exception:
+                            pass
+                        if getattr(arr, "size", 0) > 0:
+                            x = arr
+                            break
+                    except Exception:
+                        continue
+    except Exception:
+        x = None
+
+    if x is None:
+        x = np.arange(length)
+    cache[key] = (x, False)
+    return x

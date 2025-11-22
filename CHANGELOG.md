@@ -76,3 +76,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - A bug crashing the application is fixed.
 
+
+## [1.9.8] – 2025-11-22
+
+### Fixed
+- A few bugs related to the appearance of curves and legends in the "Plotted Data" plot are fixed.
+
+### Added
+- Annotation option is added for the plot in the "Plotted Data" panel.
+- Reference spectra library file (library.h5) is added; spectra in the list on the "Plotted Data" panel can be added to the library using the new "bookmark" button in each row.
+- "Load reference" button allows to load a reference spectrum saved in the file library.h5 (for these spectra the "bookmark" buttons are disabled).
+
+### Changed
+- Help -> Usage text is updated.
+

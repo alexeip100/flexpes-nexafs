@@ -58,7 +58,8 @@ from .data import DataMixin
 from .processing import ProcessingMixin
 from .plotting import PlottingMixin
 from .export import ExportMixin
-class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWindow):
+from .library import LibraryMixin
+class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, LibraryMixin, QMainWindow):
 
     def on_plotted_list_reordered(self):
         """After drag-drop: recompute Waterfall using list order, rebuild legend, redraw."""
@@ -81,52 +82,33 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         except Exception:
             pass
 
-        # 3) Rebuild the legend to follow the Plotted list order (visible lines only)
+        # 3) Rebuild the legend to follow the Plotted list order
         try:
-            order = []
-            if hasattr(self, "plotted_list") and self.plotted_list is not None:
-                for i in range(self.plotted_list.count()):
-                    item = self.plotted_list.item(i)
-                    widget = self.plotted_list.itemWidget(item)
-                    if widget is not None and hasattr(widget, "key"):
-                        order.append(widget.key)
-
-            handles, labels = [], []
-            for key in order:
-                line = getattr(self, "plotted_lines", {}).get(key)
-                if line is not None and line.get_visible():
-                    handles.append(line)
-                    lbl = None
-                    try:
-                        lbl = getattr(self, "custom_labels", {}).get(key)
-                    except Exception:
-                        lbl = None
-                    if not lbl:
-                        lbl = line.get_label() or "<select curve name>"
-                    line.set_label(lbl)
-                    labels.append(lbl)
-
-            if not handles and hasattr(self, "plotted_ax"):
-                # Fallback: use visible lines if list order unavailable
-                handles = [ln for ln in self.plotted_ax.lines if ln.get_visible()]
-                labels = [ln.get_label() for ln in handles]
-
-            if hasattr(self, "plotted_ax"):
-                leg = self.plotted_ax.legend(handles, labels)
-                try:
-                    if leg:
-                        leg.set_draggable(True)
-                        for t in leg.get_texts():
-                            t.set_picker(True)
-                except Exception:
-                    pass
+            if hasattr(self, "update_legend"):
+                self.update_legend()
+        except Exception:
+            pass
+    def _on_plotted_legend_checkbox_toggled(self, state):
+        """Qt slot: show/hide legend on Plotted Data panel."""
+        try:
+            show = bool(state)
+        except Exception:
+            show = bool(state)
+        try:
+            if hasattr(self, "toggle_plotted_legend"):
+                self.toggle_plotted_legend(show)
         except Exception:
             pass
 
-        # 4) Redraw
+    def _on_plotted_annotation_checkbox_toggled(self, state):
+        """Qt slot: show/hide annotation box on Plotted Data panel."""
         try:
-            if hasattr(self, "canvas_plotted"):
-                self.canvas_plotted.draw()
+            show = bool(state)
+        except Exception:
+            show = bool(state)
+        try:
+            if hasattr(self, "toggle_plotted_annotation"):
+                self.toggle_plotted_annotation(show)
         except Exception:
             pass
     def __init__(self):
@@ -134,8 +116,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         self.setWindowTitle("FlexPES NEXAFS Plotter")
         self.setGeometry(100, 100, 1250, 600)
 
-        self.VERSION_NUMBER = "1.9.6"
-        self.CREATION_DATETIME = "2025-11-15"
+        self.VERSION_NUMBER = "1.9.8"
+        self.CREATION_DATETIME = "2025-11-22"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
@@ -408,6 +390,27 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         self.canvas_plotted.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas_plotted_fig.tight_layout()
 
+        # Top controls for the Plotted Data panel
+        self.plotted_controls_top = QWidget()
+        self.plotted_controls_top.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.plotted_controls_top_layout = QHBoxLayout(self.plotted_controls_top)
+        self.plotted_controls_top_layout.setContentsMargins(0, 0, 0, 0)
+        self.plotted_controls_top_layout.setSpacing(5)
+
+        self.chk_show_legend = QCheckBox("Legend")
+        self.chk_show_legend.setChecked(True)
+        self.plotted_controls_top_layout.addWidget(self.chk_show_legend)
+
+        self.chk_show_annotation = QCheckBox("Annotation")
+        self.chk_show_annotation.setChecked(False)
+        self.plotted_controls_top_layout.addWidget(self.chk_show_annotation)
+
+        self.plotted_controls_top_layout.addStretch()
+
+        self.chk_show_legend.stateChanged.connect(self._on_plotted_legend_checkbox_toggled)
+        self.chk_show_annotation.stateChanged.connect(self._on_plotted_annotation_checkbox_toggled)
+
+        self.plot_left_layout.addWidget(self.plotted_controls_top, 0)
         self.toolbar_plotted = NavigationToolbar(self.canvas_plotted, self)
         self.plot_left_layout.addWidget(self.toolbar_plotted)
         self.plot_left_layout.addWidget(self.canvas_plotted, 1)
@@ -448,6 +451,14 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         self.grid_mode_combo.setCurrentText("None")
         self.grid_mode_combo.currentIndexChanged.connect(self.on_grid_toggled)
         self.plot_buttons_layout.addWidget(self.grid_mode_combo)
+        # Button to load reference spectra from library
+        self.load_reference_button = QPushButton("Load reference")
+        self.load_reference_button.setToolTip("Load reference spectra from the library")
+        try:
+            self.load_reference_button.clicked.connect(self.on_load_reference_clicked)
+        except Exception:
+            pass
+        self.plot_buttons_layout.addWidget(self.load_reference_button)
 
         # Stretch pushes the Export/ Clear buttons to the right
         self.plot_buttons_layout.addStretch()
@@ -467,6 +478,10 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
         self.plotted_splitter = QSplitter(Qt.Horizontal)
         self.plotted_splitter.addWidget(self.plot_left_widget)
         self.plotted_list = QListWidget()
+        self.plotted_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.plotted_list.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.plotted_list.setDragEnabled(True)
+        self.plotted_list.setDropIndicatorShown(True)
         self.plotted_list.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.plotted_splitter.addWidget(self.plotted_list)
         # Enable drag & drop reordering; replot on drop
@@ -636,24 +651,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, QMainWi
             finally:
                 # Allow pending timers to refresh safely now that we're done applying
                 self._in_all_channel_apply = False
-def launch():
-    import sys
-    # Use Qt from PyQt5 (add this import if not already present at the top)
-    from PyQt5.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication(sys.argv)
-
-    # If your main window class has a different name than HDF5Viewer, change it here:
-    w = HDF5Viewer()
-    w.show()
-    sys.exit(app.exec_())
 
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    viewer = HDF5Viewer()
-    viewer.show()
-    sys.exit(app.exec_())
 
 
 # ---- Split-structure compatibility layer ----
@@ -664,37 +663,3 @@ except NameError:
     # If class was renamed, leave MainWindow undefined to raise at import time
     pass
 
-def launch():
-    # Backwards compatibility helper if older scripts import launch()
-    from PyQt5 import QtWidgets
-    import sys
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    win = MainWindow()
-    win.show()
-    sys.exit(app.exec_())
-
-    def _enforce_all_channel_selection(self):
-        """Ensure the combobox shows the user's desired selection, if available, without causing re-entrant applies."""
-        try:
-            desired = getattr(self, "_desired_all_channel_selection", None)
-            if not isinstance(desired, str) or not desired:
-                return
-            # If already selected, nothing to do
-            if self.combo_all_channel.currentText() == desired:
-                return
-            # If desired exists in items, set it with signals blocked
-            count = self.combo_all_channel.count()
-            if count <= 0:
-                return
-            idx = -1
-            for i in range(count):
-                if self.combo_all_channel.itemText(i) == desired:
-                    idx = i; break
-            if idx >= 0:
-                self.combo_all_channel.blockSignals(True)
-                try:
-                    self.combo_all_channel.setCurrentIndex(idx)
-                finally:
-                    self.combo_all_channel.blockSignals(False)
-        except Exception:
-            pass

@@ -340,21 +340,38 @@ class PlottingMixin:
         if main_x is None or main_y is None:
             return
 
+        # Post-normalization mode (used for metadata and potential library export)
+        norm_mode = "None"
+        try:
+            if hasattr(self, "combo_post_norm") and self.combo_post_norm.isEnabled():
+                norm_mode = str(self.combo_post_norm.currentText())
+        except Exception:
+            norm_mode = "None"
+
         bg_subtracted = False
         if self.chk_show_without_bg.isChecked():
             background = self._compute_background(main_x, main_y)
             subtracted = main_y - background
-            norm_mode = self.combo_post_norm.currentText() if self.combo_post_norm.isEnabled() else "None"
-            subtracted = processing._proc_safe_post_normalize(self, main_x, subtracted, norm_mode)
+            try:
+                from . import processing  # local import to avoid circularity issues
+                subtracted = processing._proc_safe_post_normalize(self, main_x, subtracted, norm_mode)
+            except Exception:
+                pass
             main_y = subtracted
             bg_subtracted = True
 
+        # Parse the key into source file / entry information
+        source_file = ""
+        source_entry = ""
+        detector_name = ""
         parts = key.split("##", 1)
         if self.chk_sum.isChecked():
             origin_label = "Summed Curve"
         else:
             if len(parts) == 2:
+                source_file = parts[0]
                 path = parts[1]
+                source_entry = path
                 # Typical path looks like "entryXXXX/measurement/<channel_name>".
                 # We want to drop the redundant "measurement" and show
                 # "entryXXXX: <channel_name>" in the Plotted Data list.
@@ -363,18 +380,21 @@ class PlottingMixin:
                     entry = path_parts[0]
                     channel_name = path_parts[-1]
                     origin_label = f"{entry}: {channel_name}"
+                    detector_name = channel_name
                 else:
-                    # Fallback: use the original path if it does not match the
-                    # expected pattern.
                     origin_label = path
+                    detector_name = path_parts[-1] if path_parts else path
             else:
                 origin_label = key
 
         metadata_parts = []
-        if bg_subtracted and self.combo_post_norm.isEnabled():
-            nm = self.combo_post_norm.currentText().lower()
-            if nm != "none":
-                metadata_parts.append(nm)
+        if bg_subtracted and hasattr(self, "combo_post_norm") and self.combo_post_norm.isEnabled():
+            try:
+                nm = self.combo_post_norm.currentText().lower()
+                if nm != "none":
+                    metadata_parts.append(nm)
+            except Exception:
+                pass
         if self.chk_normalize.isChecked():
             metadata_parts.append("normalized")
         if self.chk_sum.isChecked():
@@ -384,6 +404,18 @@ class PlottingMixin:
         if metadata_parts:
             origin_label += " (" + ", ".join(metadata_parts) + ")"
 
+        # Metadata bookkeeping for potential library export
+        if not hasattr(self, "plotted_metadata") or not isinstance(getattr(self, "plotted_metadata", None), dict):
+            self.plotted_metadata = {}
+        self.plotted_metadata[storage_key] = {
+            "detector": detector_name or "",
+            "source_file": source_file or "",
+            "source_entry": source_entry or "",
+            "post_normalization": norm_mode,
+            "is_reference": False,
+        }
+
+        # Add the curve to the plotted axes and list
         self.custom_labels[storage_key] = None
         line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>")
         self.plotted_curves.add(storage_key)
@@ -393,6 +425,13 @@ class PlottingMixin:
         self.original_line_data[storage_key] = (np.asarray(main_x).copy(), np.asarray(main_y).copy())
 
         item = QListWidgetItem()
+        # Store curve key in the item for robust reordering
+        try:
+            item.setData(Qt.UserRole, storage_key)
+        except Exception:
+            pass
+            pass
+
         # Avoid circular import with UI; gracefully degrade if custom widget is unavailable.
         CurveListItemWidget = globals().get("CurveListItemWidget", None)
         if CurveListItemWidget:
@@ -403,6 +442,14 @@ class PlottingMixin:
             # Allow removing a plotted curve from the list/plot.
             if hasattr(widget, "removeRequested"):
                 widget.removeRequested.connect(self.on_curve_remove_requested)
+            # Allow adding the curve to the reference library, if LibraryMixin is present.
+            if hasattr(widget, "addToLibraryRequested"):
+                try:
+                    self.on_add_to_library_requested  # type: ignore[attr-defined]
+                except AttributeError:
+                    pass
+                else:
+                    widget.addToLibraryRequested.connect(self.on_add_to_library_requested)
             item.setSizeHint(widget.sizeHint())
             self.plotted_list.addItem(item)
             self.plotted_list.setItemWidget(item, widget)
@@ -414,6 +461,95 @@ class PlottingMixin:
         self.update_legend()
         if self.chk_sum.isChecked():
             self._sum_serial = getattr(self, "_sum_serial", 0) + 1
+    def _add_reference_curve_to_plotted(self, storage_key, x, y, label, meta=None):
+        """
+        Internal helper to add a reference spectrum (from the library) directly to
+        the Plotted Data plot and list.
+
+        This bypasses the Raw/Processed panels and does not depend on plot_data.
+        """
+        try:
+            import numpy as _np
+        except Exception:
+            import numpy as _np
+
+        if not hasattr(self, "plotted_curves"):
+            self.plotted_curves = set()
+        if not hasattr(self, "plotted_lines"):
+            self.plotted_lines = {}
+        if not hasattr(self, "original_line_data"):
+            self.original_line_data = {}
+        if not hasattr(self, "custom_labels"):
+            self.custom_labels = {}
+        if not hasattr(self, "plotted_list") or self.plotted_list is None:
+            return
+
+        # Normalize arrays
+        try:
+            x_arr = _np.asarray(x).ravel()
+            y_arr = _np.asarray(y).ravel()
+        except Exception:
+            return
+        if x_arr.size == 0 or y_arr.size == 0:
+            return
+        n = min(int(x_arr.size), int(y_arr.size))
+        x_arr = x_arr[:n]
+        y_arr = y_arr[:n]
+
+        # Register curve
+        self.custom_labels[storage_key] = str(label)
+        line, = self.plotted_ax.plot(x_arr, y_arr, label=str(label))
+        self.plotted_curves.add(storage_key)
+        self.plotted_lines[storage_key] = line
+        self.original_line_data[storage_key] = (x_arr.copy(), y_arr.copy())
+
+        # Metadata bookkeeping (mark as reference)
+        if not hasattr(self, "plotted_metadata") or not isinstance(getattr(self, "plotted_metadata", None), dict):
+            self.plotted_metadata = {}
+        m = dict(meta or {})
+        m.setdefault("detector", str(m.get("detector", "") or ""))
+        m.setdefault("source_file", str(m.get("source_file", "") or ""))
+        m.setdefault("source_entry", str(m.get("source_entry", "") or ""))
+        m.setdefault("post_normalization", str(m.get("post_normalization", "") or "None"))
+        m["is_reference"] = True
+        self.plotted_metadata[storage_key] = m
+
+        # Create list item with curve controls
+        item = QListWidgetItem()
+        # Store curve key in the item for robust reordering
+        try:
+            item.setData(Qt.UserRole, storage_key)
+        except Exception:
+            pass
+
+        CurveListItemWidget = globals().get("CurveListItemWidget", None)
+        origin_label = str(label)
+        if CurveListItemWidget:
+            widget = CurveListItemWidget(origin_label, line.get_color(), storage_key)
+            widget.colorChanged.connect(self.change_curve_color)
+            widget.visibilityChanged.connect(self.change_curve_visibility)
+            widget.styleChanged.connect(self.change_curve_style)
+            if hasattr(widget, "removeRequested"):
+                widget.removeRequested.connect(self.on_curve_remove_requested)
+            # Reference curves should not be added to library again
+            if hasattr(widget, "set_add_to_library_enabled"):
+                widget.set_add_to_library_enabled(False)
+            item.setSizeHint(widget.sizeHint())
+            self.plotted_list.addItem(item)
+            self.plotted_list.setItemWidget(item, widget)
+        else:
+            item.setText(origin_label)
+            self.plotted_list.addItem(item)
+
+        # Ensure Plotted Data tab is visible and legend updated
+        try:
+            self.data_tabs.setCurrentIndex(2)
+        except Exception:
+            pass
+        try:
+            self.update_legend()
+        except Exception:
+            pass
 
     def on_grid_toggled(self, index):
         """Handle change of grid density from combo box."""
@@ -428,7 +564,8 @@ class PlottingMixin:
 
         'Coarse' reproduces the original checkbox behavior (major-grid only).
         'Fine' uses 1 minor division (2× finer), 'Finest' uses 5 divisions
-        (~5× finer)."""
+        (~5× finer). Minor grid lines are shown less prominently than major
+        grid lines."""
         ax = getattr(self, 'plotted_ax', None)
         if ax is None:
             return
@@ -452,31 +589,34 @@ class PlottingMixin:
             pass
 
         if mode == 'none':
+            # No grid at all, turn off minor ticks too
             try:
                 ax.minorticks_off()
             except Exception:
                 pass
         else:
-            # Always show major grid lines for any non-'None' mode
+            # Always show major grid lines for any non-'None' mode, as solid lines
             try:
-                ax.grid(True, which='major')
+                ax.grid(True, which='major', linestyle='-')
             except Exception:
                 pass
 
-            # For 'Coarse' we keep only major grid (original behavior)
+            # 'Coarse' -> only major grid (no extra minor divisions)
             if mode == 'coarse':
                 try:
                     ax.minorticks_off()
                 except Exception:
                     pass
             else:
-                # 'Fine' and 'Finest': add minor grid with more divisions
+                # 'Fine' and 'Finest' -> add minor grid with more divisions,
+                # drawn as softer dashed lines between the major grid lines.
                 n = 2 if mode == 'fine' else 5
                 try:
                     ax.minorticks_on()
                     ax.xaxis.set_minor_locator(AutoMinorLocator(n))
                     ax.yaxis.set_minor_locator(AutoMinorLocator(n))
-                    ax.grid(True, which='both')
+                    # Minor grid only; keep major grid style unchanged
+                    ax.grid(True, which='minor', linestyle='--', linewidth=0.5, alpha=0.6)
                 except Exception:
                     pass
 
@@ -486,7 +626,154 @@ class PlottingMixin:
                 self.canvas_plotted.draw()
         except Exception:
             pass
+    def toggle_plotted_legend(self, visible: bool):
+        """Show or hide the legend on the Plotted Data axes."""
+        try:
+            self.plotted_legend_visible = bool(visible)
+        except Exception:
+            self.plotted_legend_visible = bool(visible)
 
+        ax = getattr(self, "plotted_ax", None)
+        leg = None
+        if ax is not None:
+            try:
+                leg = ax.get_legend()
+            except Exception:
+                leg = None
+
+        if leg is not None:
+            # Just toggle visibility of the existing legend; position is preserved
+            try:
+                leg.set_visible(self.plotted_legend_visible)
+            except Exception:
+                pass
+        else:
+            # No legend yet: create one if we are turning it on
+            if self.plotted_legend_visible and hasattr(self, "update_legend"):
+                try:
+                    self.update_legend()
+                except Exception:
+                    pass
+
+        if hasattr(self, "canvas_plotted"):
+            try:
+                self.canvas_plotted.draw()
+            except Exception:
+                pass
+
+
+    def toggle_plotted_annotation(self, visible: bool):
+        """Show or hide the the annotation text box on the Plotted Data axes."""
+        ax = getattr(self, "plotted_ax", None)
+        if ax is None:
+            return
+
+        ann = getattr(self, "plotted_annotation", None)
+
+        if visible:
+            # Create annotation if it doesn't exist yet
+            if ann is None:
+                text = getattr(self, "plotted_annotation_text", "") or "Right-click to edit"
+                try:
+                    ann = ax.text(
+                        0.02,
+                        0.98,
+                        text,
+                        transform=ax.transAxes,
+                        va="top",
+                        ha="left",
+                        bbox=dict(boxstyle="round", fc="w", alpha=0.4),
+                    )
+                    ann.set_picker(True)
+                    try:
+                        ann.set_draggable(True)
+                    except Exception:
+                        pass
+                    # Ensure drag event handlers are connected once
+                    try:
+                        if not hasattr(self, "_annot_drag_cids"):
+                            cids = []
+                            if hasattr(self, "canvas_plotted"):
+                                canvas = self.canvas_plotted
+                                cids.append(canvas.mpl_connect("button_press_event", self._on_annotation_press))
+                                cids.append(canvas.mpl_connect("motion_notify_event", self._on_annotation_motion))
+                                cids.append(canvas.mpl_connect("button_release_event", self._on_annotation_release))
+                            self._annot_drag_cids = tuple(cids)
+                    except Exception:
+                        pass
+                    self.plotted_annotation = ann
+                except Exception:
+                    ann = None
+                    self.plotted_annotation = None
+            else:
+                try:
+                    ann.set_visible(True)
+                except Exception:
+                    pass
+        else:
+            if ann is not None:
+                try:
+                    ann.set_visible(False)
+                except Exception:
+                    pass
+
+        try:
+            if hasattr(self, "canvas_plotted"):
+                self.canvas_plotted.draw()
+        except Exception:
+            pass
+    def _on_annotation_press(self, event):
+        """Start dragging the annotation text (left mouse button on the annotation)."""
+        ax = getattr(self, "plotted_ax", None)
+        ann = getattr(self, "plotted_annotation", None)
+        if ax is None or ann is None:
+            return
+        if event.inaxes is not ax:
+            return
+        # Only react to left mouse button
+        if getattr(event, "button", None) not in (1,):
+            return
+        contains, _ = ann.contains(event)
+        if not contains:
+            return
+        try:
+            # Current annotation position in display coordinates
+            pos = ann.get_position()
+            disp = ax.transAxes.transform(pos)
+            self._annot_drag_active = True
+            self._annot_drag_offset = (disp[0] - event.x, disp[1] - event.y)
+        except Exception:
+            self._annot_drag_active = False
+            self._annot_drag_offset = None
+
+    def _on_annotation_motion(self, event):
+        """Update annotation position while dragging."""
+        if not getattr(self, "_annot_drag_active", False):
+            return
+        ax = getattr(self, "plotted_ax", None)
+        ann = getattr(self, "plotted_annotation", None)
+        if ax is None or ann is None:
+            return
+        if event.inaxes is not ax:
+            return
+        try:
+            dx, dy = self._annot_drag_offset
+        except Exception:
+            dx, dy = 0.0, 0.0
+        try:
+            new_disp = (event.x + dx, event.y + dy)
+            new_axes = ax.transAxes.inverted().transform(new_disp)
+            ann.set_position(new_axes)
+            if hasattr(self, "canvas_plotted"):
+                self.canvas_plotted.draw_idle()
+        except Exception:
+            pass
+
+    def _on_annotation_release(self, event):
+        """Finish dragging the annotation."""
+        if getattr(self, "_annot_drag_active", False):
+            self._annot_drag_active = False
+            self._annot_drag_offset = None
     def clear_plotted_data(self):
         self.plotted_ax.clear()
         self.plotted_ax.set_xlabel("Photon energy (eV)")
@@ -503,6 +790,28 @@ class PlottingMixin:
         self.waterfall_mode_combo.setCurrentIndex(0)
         self.waterfall_slider.setValue(0)
         self.waterfall_spin.setValue(0.00)
+
+        # Reset annotation: remove any existing annotation and uncheck the checkbox
+        try:
+            ann = getattr(self, "plotted_annotation", None)
+            if ann is not None:
+                try:
+                    ann.remove()
+                except Exception:
+                    pass
+            self.plotted_annotation = None
+            try:
+                self.plotted_annotation_text = "Right-click to edit"
+            except Exception:
+                self.plotted_annotation_text = "Right-click to edit"
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "chk_show_annotation") and self.chk_show_annotation is not None:
+                # This will also update the internal visible flag via the slot
+                self.chk_show_annotation.setChecked(False)
+        except Exception:
+            pass
 
         # Reset Grid option to 'None'
         try:
@@ -532,9 +841,74 @@ class PlottingMixin:
                 self.proc_tree.update()
 
     def on_legend_pick(self, event):
-        if hasattr(event.artist, "get_text"):
-            old_text = event.artist.get_text()
-            new_text, ok = QInputDialog.getText(self, "Rename Curve", "New legend name:", text=old_text)
+        """
+        Handle pick events on the Plotted Data canvas.
+
+        - If the picked artist is the annotation text object, open a dialog to edit it.
+        - If the picked artist is a legend text entry, open a dialog to rename the curve.
+        """
+        artist = getattr(event, "artist", None)
+
+        # 1) Annotation editing
+        ann = getattr(self, "plotted_annotation", None)
+        if ann is not None and artist is ann:
+            mouse = getattr(event, 'mouseevent', None)
+            button = getattr(mouse, 'button', None)
+            # Only open edit dialog on right-click; left-click is for dragging
+            if button not in (3,):
+                return
+
+            try:
+                old_text = ann.get_text() or ""
+            except Exception:
+                old_text = ""
+            new_text, ok = QInputDialog.getText(
+                self,
+                "Edit annotation",
+                "Annotation text:",
+                text=old_text,
+            )
+            if ok:
+                try:
+                    text = str(new_text)
+                except Exception:
+                    text = old_text
+                try:
+                    ann.set_text(text)
+                except Exception:
+                    pass
+                try:
+                    self.plotted_annotation_text = text
+                except Exception:
+                    self.plotted_annotation_text = text
+                try:
+                    if hasattr(self, "canvas_plotted"):
+                        self.canvas_plotted.draw()
+                except Exception:
+                    pass
+            return
+
+        # 2) Legend text renaming
+        ax = getattr(self, "plotted_ax", None)
+        if ax is None:
+            return
+        leg = ax.get_legend()
+        if leg is None:
+            return
+
+        texts = list(leg.get_texts() or [])
+        if artist not in texts:
+            # Ignore picks that are not legend text
+            return
+
+        if hasattr(artist, "get_text"):
+            old_text = artist.get_text()
+            new_text, ok = QInputDialog.getText(
+                self,
+                "Rename Curve",
+                "New legend name:",
+                text=old_text,
+            )
             if ok and new_text:
                 for key, line in self.plotted_lines.items():
                     current_label = self.custom_labels.get(key)
@@ -542,24 +916,133 @@ class PlottingMixin:
                         self.custom_labels[key] = new_text
                         break
                 self.update_legend()
-
     def update_legend(self):
-        visible_lines = []
-        labels = []
-        for key, line in self.plotted_lines.items():
-            if line.get_visible():
-                visible_lines.append(line)
-                label = self.custom_labels.get(key) or "<select curve name>"
-                line.set_label(label)
-                labels.append(label)
-        leg = self.plotted_ax.legend(visible_lines, labels)
-        if leg:
-            leg.set_draggable(True)
-            for text in leg.get_texts():
-                text.set_picker(True)
-        self.canvas_plotted_fig.tight_layout()
-        self.canvas_plotted.draw()
+        """Rebuild the legend so its order follows the Plotted list (visible curves only)."""
+        try:
+            order = []
+            if hasattr(self, "plotted_list") and self.plotted_list is not None:
+                from .widgets.curve_item import CurveListItemWidget
+                for row in range(self.plotted_list.count()):
+                    item = self.plotted_list.item(row)
+                    if item is None:
+                        continue
+                    # Retrieve the storage key from the item (set in pass_to_plotted_no_clear / _add_reference_curve_to_plotted)
+                    key = item.data(Qt.UserRole)
+                    if key is not None:
+                        key = str(key)
 
+                    # If Qt has detached the row widget (e.g. after drag/drop), recreate it
+                    widget = self.plotted_list.itemWidget(item)
+                    if widget is None and key:
+                        line = getattr(self, "plotted_lines", {}).get(key)
+                        if line is not None:
+                            origin_label = line.get_label() or key
+                            widget = CurveListItemWidget(origin_label, line.get_color(), key)
+                            widget.colorChanged.connect(self.change_curve_color)
+                            widget.visibilityChanged.connect(self.change_curve_visibility)
+                            widget.styleChanged.connect(self.change_curve_style)
+                            if hasattr(widget, "removeRequested"):
+                                widget.removeRequested.connect(self.on_curve_remove_requested)
+                            # For reference curves from the library, disable "Add to library" button again
+                            meta = getattr(self, "plotted_metadata", {}).get(key, {}) if hasattr(self, "plotted_metadata") else {}
+                            if meta.get("is_reference") and hasattr(widget, "set_add_to_library_enabled"):
+                                widget.set_add_to_library_enabled(False)
+                            item.setSizeHint(widget.sizeHint())
+                            self.plotted_list.setItemWidget(item, widget)
+
+                    if key:
+                        order.append(key)
+
+            ax = getattr(self, "plotted_ax", None)
+            existing_leg = None
+            saved_loc = getattr(self, "_plotted_legend_loc", None)
+            saved_bbox = getattr(self, "_plotted_legend_bbox", None)
+            if ax is not None:
+                try:
+                    existing_leg = ax.get_legend()
+                except Exception:
+                    existing_leg = None
+            if existing_leg is not None:
+                try:
+                    saved_loc = getattr(existing_leg, "_loc", saved_loc)
+                except Exception:
+                    pass
+                try:
+                    saved_bbox = existing_leg.get_bbox_to_anchor()
+                except Exception:
+                    pass
+            try:
+                self._plotted_legend_loc = saved_loc
+            except Exception:
+                self._plotted_legend_loc = saved_loc
+            try:
+                self._plotted_legend_bbox = saved_bbox
+            except Exception:
+                self._plotted_legend_bbox = saved_bbox
+
+            handles, labels = [], []
+            for key in order:
+                line = getattr(self, "plotted_lines", {}).get(key)
+                if line is not None and line.get_visible():
+                    handles.append(line)
+                    lbl = None
+                    try:
+                        lbl = getattr(self, "custom_labels", {}).get(key)
+                    except Exception:
+                        lbl = None
+                    if not lbl:
+                        lbl = line.get_label() or "<select curve name>"
+                    line.set_label(lbl)
+                    labels.append(lbl)
+
+            if not hasattr(self, "plotted_ax"):
+                # Nothing to draw the legend on
+                if hasattr(self, "canvas_plotted"):
+                    try:
+                        self.canvas_plotted.draw()
+                    except Exception:
+                        pass
+                return
+
+            ax = self.plotted_ax
+            leg = None
+            if handles:
+                leg = ax.legend(handles, labels)
+                try:
+                    if leg:
+                        leg.set_draggable(True)
+                        for t in leg.get_texts():
+                            t.set_picker(True)
+                except Exception:
+                    pass
+            try:
+                self._plotted_legend = leg
+            except Exception:
+                self._plotted_legend = leg
+
+            # Apply visibility flag so that hiding the legend keeps its position
+            try:
+                show_legend = getattr(self, "plotted_legend_visible", True)
+            except Exception:
+                show_legend = True
+            if leg is not None:
+                try:
+                    leg.set_visible(bool(show_legend))
+                except Exception:
+                    pass
+
+            if hasattr(self, "canvas_plotted_fig"):
+                try:
+                    self.canvas_plotted_fig.tight_layout()
+                except Exception:
+                    pass
+            if hasattr(self, "canvas_plotted"):
+                try:
+                    self.canvas_plotted.draw()
+                except Exception:
+                    pass
+        except Exception:
+            pass
     def visible_curves_count(self):
         return sum(1 for _k, visible in getattr(self, "raw_visibility", {}).items() if visible)
 
@@ -679,6 +1162,27 @@ class PlottingMixin:
         self.plotted_ax.set_ylabel("XAS intensity (arb. units)")
         self.canvas_plotted_fig.tight_layout()
         self.canvas_plotted.draw()
+        # Reset annotation state when clearing everything
+        try:
+            ann = getattr(self, "plotted_annotation", None)
+            if ann is not None:
+                try:
+                    ann.remove()
+                except Exception:
+                    pass
+            self.plotted_annotation = None
+            try:
+                self.plotted_annotation_text = "Right-click to edit"
+            except Exception:
+                self.plotted_annotation_text = "Right-click to edit"
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "chk_show_annotation") and self.chk_show_annotation is not None:
+                self.chk_show_annotation.setChecked(False)
+        except Exception:
+            pass
+
         self.plotted_curves.clear()
         self.plotted_lines.clear()
         self.plotted_list.clear()
