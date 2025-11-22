@@ -464,3 +464,26 @@ def lookup_energy(viewer, abs_path: str, parent: str, length: int):
         x = np.arange(length)
     cache[key] = (x, False)
     return x
+def collect_available_1d_datasets(self):
+        """Return a sorted list of unique relative paths for all 1D datasets across opened HDF5 files.
+        Relative path is with respect to the group (no leading slash)."""
+        import h5py
+        rels = set()
+        files = list(getattr(self, "hdf5_files", {}).keys()) if hasattr(self, "hdf5_files") else []
+        for abs_path in files:
+            try:
+                with self._open_h5_read(abs_path) as f:
+                    def _visit(name, obj):
+                        try:
+                            if isinstance(obj, h5py.Dataset):
+                                shp = tuple(getattr(obj, "shape", ()) or ())
+                                if len(shp) == 1:
+                                    s = name.lstrip("/")
+                                    rels.add(s)
+                        except Exception:
+                            pass
+                    f.visititems(_visit)
+            except Exception:
+                pass
+        out = sorted(rels, key=lambda s: s.lower())
+        return out

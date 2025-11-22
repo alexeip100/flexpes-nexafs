@@ -1007,7 +1007,13 @@ class PlottingMixin:
             ax = self.plotted_ax
             leg = None
             if handles:
-                leg = ax.legend(handles, labels)
+                # Recreate legend at its previous location if known
+                saved_loc = getattr(self, "_plotted_legend_loc", None)
+
+                if saved_loc is not None:
+                    leg = ax.legend(handles, labels, loc=saved_loc)
+                else:
+                    leg = ax.legend(handles, labels)
                 try:
                     if leg:
                         leg.set_draggable(True)

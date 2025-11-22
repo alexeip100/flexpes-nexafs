@@ -651,8 +651,24 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             finally:
                 # Allow pending timers to refresh safely now that we're done applying
                 self._in_all_channel_apply = False
+def launch():
+    import sys
+    # Use Qt from PyQt5 (add this import if not already present at the top)
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication(sys.argv)
+
+    # If your main window class has a different name than HDF5Viewer, change it here:
+    w = HDF5Viewer()
+    w.show()
+    sys.exit(app.exec_())
 
 
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    viewer = HDF5Viewer()
+    viewer.show()
+    sys.exit(app.exec_())
 
 
 # ---- Split-structure compatibility layer ----
@@ -663,3 +679,37 @@ except NameError:
     # If class was renamed, leave MainWindow undefined to raise at import time
     pass
 
+def launch():
+    # Backwards compatibility helper if older scripts import launch()
+    from PyQt5 import QtWidgets
+    import sys
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec_())
+
+    def _enforce_all_channel_selection(self):
+        """Ensure the combobox shows the user's desired selection, if available, without causing re-entrant applies."""
+        try:
+            desired = getattr(self, "_desired_all_channel_selection", None)
+            if not isinstance(desired, str) or not desired:
+                return
+            # If already selected, nothing to do
+            if self.combo_all_channel.currentText() == desired:
+                return
+            # If desired exists in items, set it with signals blocked
+            count = self.combo_all_channel.count()
+            if count <= 0:
+                return
+            idx = -1
+            for i in range(count):
+                if self.combo_all_channel.itemText(i) == desired:
+                    idx = i; break
+            if idx >= 0:
+                self.combo_all_channel.blockSignals(True)
+                try:
+                    self.combo_all_channel.setCurrentIndex(idx)
+                finally:
+                    self.combo_all_channel.blockSignals(False)
+        except Exception:
+            pass
