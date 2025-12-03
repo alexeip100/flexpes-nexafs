@@ -220,6 +220,187 @@ class DataMixin:
         except Exception:
             pass
 
+    def close_single_hdf5_file(self, abs_path):
+        """
+        Close a single HDF5 file and remove its data from internal state,
+        without affecting other open files.
+        """
+        try:
+            abs_path = os.path.abspath(abs_path)
+        except Exception:
+            abs_path = str(abs_path)
+
+        # Validate registry
+        if not isinstance(getattr(self, "hdf5_files", None), dict):
+            return
+        if abs_path not in self.hdf5_files:
+            return
+
+        # Remove the file from the registry
+        try:
+            self.hdf5_files.pop(abs_path, None)
+        except Exception:
+            pass
+
+        # Remove raw/processed data and visibility flags for this file
+        try:
+            keys_to_remove = [
+                key for key in list(getattr(self, "plot_data", {}).keys())
+                if isinstance(key, str) and key.startswith(abs_path + "##")
+            ]
+        except Exception:
+            keys_to_remove = []
+        for key in keys_to_remove:
+            try:
+                self.plot_data.pop(key, None)
+            except Exception:
+                pass
+            try:
+                self.raw_visibility.pop(key, None)
+            except Exception:
+                pass
+
+        # Drop cached energy arrays for this file
+        try:
+            cache = getattr(self, "energy_cache", None)
+            if isinstance(cache, dict):
+                for key in list(cache.keys()):
+                    if isinstance(key, str) and key.startswith(abs_path + "::"):
+                        cache.pop(key, None)
+        except Exception:
+            pass
+
+        # Remove curves belonging to this file from the Plotted tab
+        try:
+            plotted_curves = getattr(self, "plotted_curves", None)
+            plotted_lines = getattr(self, "plotted_lines", None)
+            plotted_list = getattr(self, "plotted_list", None)
+            plotted_metadata = getattr(self, "plotted_metadata", {})
+            original_line_data = getattr(self, "original_line_data", {})
+            custom_labels = getattr(self, "custom_labels", {})
+
+            keys_for_file = set()
+
+            # Prefer explicit metadata if present
+            if isinstance(plotted_metadata, dict):
+                for key, meta in list(plotted_metadata.items()):
+                    try:
+                        if meta.get("source_file") == abs_path:
+                            keys_for_file.add(key)
+                    except Exception:
+                        continue
+
+            # Fallback: match on storage key prefix
+            if isinstance(plotted_curves, (set, list)):
+                for key in list(plotted_curves):
+                    if isinstance(key, str) and key.startswith(abs_path + "##"):
+                        keys_for_file.add(key)
+
+            for key in keys_for_file:
+                # Remove line from axes
+                try:
+                    if isinstance(plotted_lines, dict):
+                        line = plotted_lines.pop(key, None)
+                        if line is not None:
+                            try:
+                                line.remove()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+                # Remove bookkeeping structures
+                try:
+                    if isinstance(plotted_curves, set):
+                        plotted_curves.discard(key)
+                    elif isinstance(plotted_curves, list):
+                        if key in plotted_curves:
+                            plotted_curves.remove(key)
+                except Exception:
+                    pass
+                try:
+                    if isinstance(original_line_data, dict):
+                        original_line_data.pop(key, None)
+                except Exception:
+                    pass
+                try:
+                    if isinstance(custom_labels, dict):
+                        custom_labels.pop(key, None)
+                except Exception:
+                    pass
+                try:
+                    if isinstance(plotted_metadata, dict):
+                        plotted_metadata.pop(key, None)
+                except Exception:
+                    pass
+
+                # Remove from the list widget
+                try:
+                    if plotted_list is not None:
+                        from PyQt5.QtCore import Qt as _Qt  # local alias to avoid surprises
+                        for row in range(plotted_list.count() - 1, -1, -1):
+                            item = plotted_list.item(row)
+                            key_role = item.data(_Qt.UserRole)
+                            widget = plotted_list.itemWidget(item)
+                            widget_key = getattr(widget, "key", None) if widget is not None else None
+                            if key_role == key or widget_key == key:
+                                plotted_list.takeItem(row)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # If no files remain, fall back to the full reset
+        try:
+            if not self.hdf5_files:
+                self.close_file()
+                return
+        except Exception:
+            pass
+
+        # Otherwise, refresh labels and plots
+        try:
+            self.update_file_label()
+        except Exception:
+            pass
+        try:
+            self.update_plot_raw()
+        except Exception:
+            pass
+        try:
+            self.update_plot_processed()
+        except Exception:
+            pass
+
+        # Refresh 'All in channel' controls
+        try:
+            if hasattr(self, "combo_all_channel"):
+                self.combo_all_channel.clear()
+            if hasattr(self, "cb_all_in_channel"):
+                self.cb_all_in_channel.setChecked(False)
+            setattr(self, "_last_all_channel_filter", None)
+            QTimer.singleShot(0, getattr(self, "_refresh_all_in_channel_combo", lambda: None))
+        except Exception:
+            pass
+
+        # Refresh Plotted axes and legend
+        try:
+            if hasattr(self, "recompute_waterfall_layout"):
+                self.recompute_waterfall_layout()
+            else:
+                if hasattr(self, "rescale_plotted_axes"):
+                    self.rescale_plotted_axes()
+                if hasattr(self, "canvas_plotted"):
+                    self.canvas_plotted.draw()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "update_legend"):
+                self.update_legend()
+        except Exception:
+            pass
+
+
     def open_file(self):
         dialog = QFileDialog(self, "Open HDF5 File(s)")
         dialog.setOption(QFileDialog.DontUseNativeDialog, True)          # keep control over size

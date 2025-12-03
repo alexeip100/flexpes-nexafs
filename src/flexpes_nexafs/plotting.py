@@ -84,66 +84,157 @@ def _read_help_markdown():
 
 def _basic_md_to_html(md: str) -> str:
     """Very small Markdown->HTML fallback.
-    Handles # headers, lists, code spans, **bold**, *italic*.
-    Prefer 'markdown' module if available.
+
+    This version is careful not to treat every single line break in the
+    source file as a separate paragraph. Instead, consecutive non-empty
+    lines that are not list items or headings are merged into one
+    paragraph, so that soft-wrapped text from the editor behaves like a
+    normal flowing paragraph in the help window.
+
+    It supports:
+      - #, ##, ### headings
+      - unordered lists starting with "- " or "* "
+      - ordered lists starting with "1. ", "2. ", ... "9. "
+      - **bold**, *italic*, and `inline code`
     """
+
     import html, re
+
+    # Escape HTML first, then re-introduce simple formatting
+
     text = html.escape(md)
 
     # inline code
+
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+
     # bold / italic
+
     text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
+
     text = re.sub(r"\*([^*]+)\*", r"<i>\1</i>", text)
 
-    lines = []
-    in_ul = False
-    in_ol = False
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if line.startswith("# "):
-            if in_ul:
-                lines.append("</ul>"); in_ul = False
-            if in_ol:
-                lines.append("</ol>"); in_ol = False
-            lines.append(f"<h1>{line[2:].strip()}</h1>")
-        elif line.startswith("## "):
-            if in_ul:
-                lines.append("</ul>"); in_ul = False
-            if in_ol:
-                lines.append("</ol>"); in_ol = False
-            lines.append(f"<h2>{line[3:].strip()}</h2>")
-        elif line.startswith("### "):
-            if in_ul:
-                lines.append("</ul>"); in_ul = False
-            if in_ol:
-                lines.append("</ol>"); in_ol = False
-            lines.append(f"<h3>{line[4:].strip()}</h3>")
-        elif line.startswith("- ") or line.startswith("* "):
-            if not in_ul:
-                if in_ol:
-                    lines.append("</ol>"); in_ol = False
-                lines.append("<ul>"); in_ul = True
-            lines.append(f"<li>{line[2:].strip()}</li>")
-        elif any(line.startswith(f"{n}. ") for n in range(1, 10)):
-            if not in_ol:
-                if in_ul:
-                    lines.append("</ul>"); in_ul = False
-                lines.append("<ol>"); in_ol = True
-            item_text = line[line.find('.')+1:].strip()
-            lines.append(f"<li>{item_text}</li>")
-        elif line == "":
-            lines.append("<br>")
-        else:
-            if in_ul:
-                lines.append("</ul>"); in_ul = False
-            if in_ol:
-                lines.append("</ol>"); in_ol = False
-            lines.append(f"<p>{line}</p>")
-    if in_ul: lines.append("</ul>")
-    if in_ol: lines.append("</ol>")
-    return "\n".join(lines)
+    # Now process line-by-line with simple block structure
 
+    lines_out = []
+
+    in_ul = False
+
+    in_ol = False
+
+    para_buf = []  # accumulate plain paragraph lines
+
+    def flush_para():
+
+        nonlocal para_buf
+
+        if para_buf:
+
+            # Join soft-wrapped lines with spaces into one logical paragraph
+
+            lines_out.append(f"<p>{' '.join(para_buf).strip()}</p>")
+
+            para_buf = []
+
+    for raw in text.splitlines():
+
+        line = raw.strip()
+
+        if not line:
+
+            # Blank line: end any running paragraph, leave lists open
+
+            flush_para()
+
+            continue
+
+        # Headings
+
+        if line.startswith("# ") or line.startswith("## ") or line.startswith("### "):
+
+            flush_para()
+
+            if in_ul:
+
+                lines_out.append("</ul>"); in_ul = False
+
+            if in_ol:
+
+                lines_out.append("</ol>"); in_ol = False
+
+            if line.startswith("# "):
+
+                lines_out.append(f"<h1>{line[2:].strip()}</h1>")
+
+            elif line.startswith("## "):
+
+                lines_out.append(f"<h2>{line[3:].strip()}</h2>")
+
+            else:
+
+                lines_out.append(f"<h3>{line[4:].strip()}</h3>")
+
+            continue
+
+        # Unordered list item
+
+        if line.startswith("- ") or line.startswith("* "):
+
+            flush_para()
+
+            if in_ol:
+
+                lines_out.append("</ol>"); in_ol = False
+
+            if not in_ul:
+
+                lines_out.append("<ul>"); in_ul = True
+
+            item = line[2:].strip()
+
+            lines_out.append(f"<li>{item}</li>")
+
+            continue
+
+        # Ordered list item (1. 2. ... 9.)
+
+        if any(line.startswith(f"{n}. ") for n in range(1, 10)):
+
+            flush_para()
+
+            if in_ul:
+
+                lines_out.append("</ul>"); in_ul = False
+
+            if not in_ol:
+
+                lines_out.append("<ol>"); in_ol = True
+
+            dot = line.find('.')
+
+            item = line[dot+1:].strip()
+
+            lines_out.append(f"<li>{item}</li>")
+
+            continue
+
+        # Otherwise part of a normal paragraph: accumulate
+
+        para_buf.append(line)
+
+    # Flush trailing paragraph and lists
+
+    flush_para()
+
+    if in_ul:
+
+        lines_out.append("</ul>")
+
+    if in_ol:
+
+        lines_out.append("</ol>")
+
+    return "\n".join(lines_out)
 def get_usage_html() -> str:
     """Return the Help->Usage content as HTML from docs/help.md."""
     md = _read_help_markdown()
@@ -1093,8 +1184,8 @@ class PlottingMixin:
         browser = HelpBrowser()
         
         browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        browser.setLineWrapMode(QTextEdit.WidgetWidth)
-        browser.setWordWrapMode(QTextOption.WordWrap)
+        # Use HelpBrowser's internal wrapping strategy for consistent behaviour across Qt builds
+        # (FixedPixelWidth + resize-based wrap column).
         
         browser.setStyleSheet("font-size: 14px;")
         # QTextBrowser expects HTML; get_usage_html() already returns HTML
@@ -1381,7 +1472,7 @@ class PlottingMixin:
                 self.manual_bg_line = None
         elif mode == "Manual" and main_x is not None and main_y is not None:
             self.spin_preedge.setEnabled(False)
-            processing.apply_manual_bg(self, main_x, main_y)
+            self._apply_manual_bg(main_x, main_y)
         else:
             self.spin_preedge.setEnabled(True)
             self.reset_manual_mode()

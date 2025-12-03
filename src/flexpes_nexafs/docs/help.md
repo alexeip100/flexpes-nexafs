@@ -7,7 +7,7 @@ and export of raw and processed data.
 
 ## File Controls (Top Left Panel)
 - **Open HDF5 File:** Load one or more HDF5 files containing NEXAFS data.
-- **Close all:** Close all currently opened files (but keep the application running).
+- **Close all:** Close all currently opened files (but keep the application running). To close individual h5 files: select a file and either "Delete" or right-click and "Close".
 - **Clear all:** Remove all loaded data and reset the interface.
 - **Help:** Open the **Usage** and **About** dialogs.
 
@@ -17,9 +17,9 @@ Expand groups to view datasets. Tick checkboxes on **1-D datasets**
 (typically under `entryXXXX/measurement/...`) to include or exclude curves
 from the plots.
 
-## Tabs (Right Panel)
-
 ---
+
+## Tabs (Right Panel):
 
 ## Raw Data Tab
 **Purpose:** choose which datasets (curves) are visible.

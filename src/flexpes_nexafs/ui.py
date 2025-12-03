@@ -116,8 +116,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.setWindowTitle("FlexPES NEXAFS Plotter")
         self.setGeometry(100, 100, 1250, 600)
 
-        self.VERSION_NUMBER = "1.9.8"
-        self.CREATION_DATETIME = "2025-11-22"
+        self.VERSION_NUMBER = "1.9.9"
+        self.CREATION_DATETIME = "2025-12-02"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
@@ -201,6 +201,9 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.tree.itemExpanded.connect(self.load_subtree)
         self.tree.itemChanged.connect(self.toggle_plot)
         self.tree.itemClicked.connect(self.display_data)
+        # Enable context menu on the HDF5 tree for per-file closing
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         self.left_panel.addWidget(self.tree)
 
         # Right panel: tab widget
@@ -651,6 +654,95 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             finally:
                 # Allow pending timers to refresh safely now that we're done applying
                 self._in_all_channel_apply = False
+    def _on_tree_context_menu(self, pos):
+        """Context menu handler for closing an individual HDF5 file from the main tree."""
+        try:
+            tree = getattr(self, "tree", None)
+            if tree is None:
+                return
+            item = tree.itemAt(pos)
+            # Only top-level items (files) should show the Close action
+            if item is None or item.parent() is not None:
+                return
+            data = item.data(0, Qt.UserRole)
+            if not isinstance(data, tuple) or len(data) != 2:
+                return
+            abs_path, hdf5_path = data
+            # File-level items have an abs_path and empty internal HDF5 path
+            if not abs_path or hdf5_path:
+                return
+
+            menu = QMenu(tree)
+            close_action = menu.addAction("Close")
+            chosen = menu.exec_(tree.viewport().mapToGlobal(pos))
+            if chosen == close_action:
+                self._confirm_and_close_file(abs_path, item)
+        except Exception:
+            # Fail silently: context menu is convenience only
+            pass
+
+    def _confirm_and_close_file(self, abs_path, item=None):
+        """Ask the user to confirm closing a specific HDF5 file and delegate cleanup."""
+        try:
+            base = os.path.basename(abs_path) or abs_path
+        except Exception:
+            base = str(abs_path)
+
+        try:
+            reply = QMessageBox.question(
+                self,
+                "Close HDF5 file",
+                f"Do you really want to close this file?\n{base}",
+                QMessageBox.Ok | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+        except Exception:
+            return
+
+        if reply != QMessageBox.Ok:
+            return
+
+        # Remove the top-level item from the tree, if provided
+        try:
+            tree = getattr(self, "tree", None)
+            if tree is not None and item is not None:
+                idx = tree.indexOfTopLevelItem(item)
+                if idx >= 0:
+                    tree.takeTopLevelItem(idx)
+        except Exception:
+            pass
+
+        # Delegate the actual state cleanup to the data-layer helper
+        try:
+            if hasattr(self, "close_single_hdf5_file"):
+                self.close_single_hdf5_file(abs_path)
+        except Exception:
+            pass
+
+    def keyPressEvent(self, event):
+        """Handle Delete on the main HDF5 tree to close a single file."""
+        handled = False
+        try:
+            if event.key() == Qt.Key_Delete:
+                tree = getattr(self, "tree", None)
+                if tree is not None and tree.hasFocus():
+                    item = tree.currentItem()
+                    if item is not None and item.parent() is None:
+                        data = item.data(0, Qt.UserRole)
+                        if isinstance(data, tuple) and len(data) == 2:
+                            abs_path, hdf5_path = data
+                            if abs_path and not hdf5_path:
+                                self._confirm_and_close_file(abs_path, item)
+                                handled = True
+        except Exception:
+            handled = False
+
+        if not handled:
+            try:
+                super().keyPressEvent(event)
+            except Exception:
+                pass
+
 def launch():
     import sys
     # Use Qt from PyQt5 (add this import if not already present at the top)

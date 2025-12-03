@@ -90,3 +90,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Help -> Usage text is updated.
 
+
+## [1.9.9] – 2025-12-02
+
+### Fixed
+- A bug with the manual background being invisible upon unchecking "Subtract background" box is fixed.
+- A bug in the appearance of the Help->Usage window is fixed: the text is now rescaled upon window resize.
+
+### Added 
+- It is possible now to close not only all h5 files at once, but also individual files, by selecting a file and either pressing "Delete" or right-click and pressing "Close". 
+- Manual background can now be changed by the drag-and-drop of the anchor points not only in Y but also in X direction.
+
+

@@ -399,18 +399,23 @@ class ProcessingMixin:
             return
         if event.inaxes is not getattr(self, "proc_ax", None):
             return
-        if event.ydata is None or not np.isfinite(event.ydata):
+        if (event.xdata is None or not np.isfinite(event.xdata) or
+                event.ydata is None or not np.isfinite(event.ydata)):
             return
         try:
-            x_fixed = float(self.manual_points[i]["x"])
+            x_new = float(event.xdata)
+            y_new = float(event.ydata)
         except Exception:
             return
-        y_new = float(event.ydata)
+        # Update both X and Y of the active manual background anchor
+        self.manual_points[i]["x"] = x_new
         self.manual_points[i]["y"] = y_new
         art = self.manual_points[i].get("artist")
         if art is not None:
-            try: art.set_data([x_fixed], [y_new])
-            except Exception: pass
+            try:
+                art.set_data([x_new], [y_new])
+            except Exception:
+                pass
         xs = np.array([pt["x"] for pt in self.manual_points], dtype=float)
         ys = np.array([pt["y"] for pt in self.manual_points], dtype=float)
         try:
