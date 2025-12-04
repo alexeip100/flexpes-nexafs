@@ -102,3 +102,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Manual background can now be changed by the drag-and-drop of the anchor points not only in Y but also in X direction.
 
 
+## [2.0.0] – 2025-12-04
+
+### Added
+- an example h5 file with typical structure used at FlexPES is added to the package in the \example_data folder along with a README.md file describing its structure.
+- upon pressing "Open HDF5 files" button, the opening dialog is pointing now by default to this example file.
+

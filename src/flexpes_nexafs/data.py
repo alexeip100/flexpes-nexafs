@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 plt.ioff()
+from importlib.resources import files
 from PyQt5.QtWidgets import (QApplication, QFileDialog, QTreeWidget, QTreeWidgetItem, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTabWidget, QCheckBox, QComboBox, QSpinBox, QMessageBox, QSizePolicy, QDialog)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
@@ -409,7 +410,16 @@ class DataMixin:
         dialog.setNameFilter("HDF5 Files (*.h5 *.hdf5)")
         dialog.setViewMode(QFileDialog.Detail)
         dialog.setSizeGripEnabled(True)
-    
+
+        # Try to default to the installed example_data directory, if available
+        try:
+            example_dir = files("flexpes_nexafs") / "example_data"
+            if os.path.isdir(str(example_dir)):
+                dialog.setDirectory(str(example_dir))
+        except Exception:
+            # Fall back to Qt's default directory behaviour if anything goes wrong
+            pass
+
         dialog.setWindowFlags(dialog.windowFlags() | Qt.Window | Qt.WindowMinMaxButtonsHint)
     
         screen_geom = QApplication.primaryScreen().availableGeometry()

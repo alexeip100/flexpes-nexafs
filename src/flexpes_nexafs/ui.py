@@ -116,8 +116,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.setWindowTitle("FlexPES NEXAFS Plotter")
         self.setGeometry(100, 100, 1250, 600)
 
-        self.VERSION_NUMBER = "1.9.9"
-        self.CREATION_DATETIME = "2025-12-02"
+        self.VERSION_NUMBER = "2.0.0"
+        self.CREATION_DATETIME = "2025-12-04"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
