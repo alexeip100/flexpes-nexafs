@@ -522,7 +522,6 @@ class DataMixin:
                                 child_item.addChild(QTreeWidgetItem(["(click to expand)"]))
                             elif isinstance(sub_obj, h5py.Dataset) and sub_obj.ndim == 1:
                                 child_item.setCheckState(0, Qt.Unchecked)
-                                child_item.setData(1, Qt.UserRole, True)
                             item.addChild(child_item)
                     return
     
@@ -540,7 +539,6 @@ class DataMixin:
                                     child_item.addChild(QTreeWidgetItem(["(click to expand)"]))
                                 elif isinstance(sub_obj, h5py.Dataset) and sub_obj.ndim == 1:
                                     child_item.setCheckState(0, Qt.Unchecked)
-                                    child_item.setData(1, Qt.UserRole, True)
                                 item.addChild(child_item)
         except Exception:
             pass

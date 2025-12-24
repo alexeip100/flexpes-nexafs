@@ -26,7 +26,7 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QApplication, QFileDialog, QTreeWidget, QTreeWidgetItem, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTabWidget, QCheckBox, QComboBox,
-    QSpinBox, QMessageBox, QSizePolicy, QDialog, QListWidgetItem, QInputDialog, QTextBrowser
+    QSpinBox, QMessageBox, QSizePolicy, QDialog, QListWidgetItem, QInputDialog, QTextBrowser, QMenu, QSplitter
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor, QTextOption
@@ -46,6 +46,62 @@ class HelpBrowser(QTextBrowser):
         self.setWordWrapMode(QTextOption.WordWrap)
         # We want wrapping instead of horizontal scrolling
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # Quick navigation (right-click) to headings in the help text.
+        self._help_anchors = []  # list[(level:int, title:str, anchor_id:str)]
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_help_context_menu)
+
+    def setHtml(self, html: str) -> None:  # type: ignore[override]
+        """Set HTML and extract heading anchors for fast navigation."""
+        super().setHtml(html)
+        try:
+            import re, html as _html
+
+            def _strip_tags(s: str) -> str:
+                s = re.sub(r"<[^>]+>", "", s)
+                return _html.unescape(s).strip()
+
+            anchors = []
+            # Collect H1/H2 headings with ids.
+            for mh in re.finditer(
+                r"<h([12])[^>]*id=\"([^\"]+)\"[^>]*>(.*?)</h\1>",
+                html,
+                flags=re.IGNORECASE | re.DOTALL,
+            ):
+                level = int(mh.group(1))
+                title = _strip_tags(mh.group(3))
+                anchor = mh.group(2)
+                if title and anchor:
+                    anchors.append((level, title, anchor))
+            self._help_anchors = anchors
+        except Exception:
+            self._help_anchors = []
+
+    def _show_help_context_menu(self, pos):
+        """Show a context menu with a "Go to" section index."""
+        try:
+            from functools import partial
+            menu = self.createStandardContextMenu()
+            if getattr(self, "_help_anchors", None):
+                nav = QMenu("Go to", menu)
+                for level, title, anchor in self._help_anchors:
+                    disp = ("    " + title) if level == 2 else title
+                    nav.addAction(disp, partial(self.scrollToAnchor, anchor))
+                # Put navigation on top.
+                if menu.actions():
+                    first = menu.actions()[0]
+                    menu.insertMenu(first, nav)
+                    menu.insertSeparator(first)
+                else:
+                    menu.addMenu(nav)
+            menu.exec_(self.mapToGlobal(pos))
+        except Exception:
+            # Fallback: show the default context menu.
+            try:
+                self.createStandardContextMenu().exec_(self.mapToGlobal(pos))
+            except Exception:
+                pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -242,7 +298,9 @@ def get_usage_html() -> str:
         return "<p><b>Help file not found.</b></p>"
     try:
         import markdown
-        return markdown.markdown(md, extensions=["tables","fenced_code","sane_lists"])  # type: ignore
+        # "toc" adds stable id attributes to headings (used for in-text links and
+        # the HelpBrowser right-click "Go to" menu).
+        return markdown.markdown(md, extensions=["tables","fenced_code","sane_lists","toc"])  # type: ignore
     except Exception:
         return _basic_md_to_html(md)
 
@@ -416,8 +474,228 @@ class PlottingMixin:
             key = visible_keys[0]
         else:
             if len(visible_keys) != 1:
-                QMessageBox.warning(self, "Warning", "Please select exactly one dataset, or enable 'Sum'.")
+                # Multi-pass is allowed only for group Auto BG with subtraction enabled.
+                allow_multi = False
+                try:
+                    mode = str(getattr(self, "combo_bg").currentText()) if hasattr(self, "combo_bg") else ""
+                    cb = getattr(self, "chk_group_bg", None)
+                    if (len(visible_keys) >= 2 and mode == "Automatic" and cb is not None and cb.isEnabled() and cb.isChecked()
+                        and getattr(self, "chk_show_without_bg", None) is not None and self.chk_show_without_bg.isChecked()
+                        and (not self.chk_sum.isChecked())):
+                        allow_multi = True
+                except Exception:
+                    allow_multi = False
+
+                if not allow_multi:
+                    QMessageBox.warning(self, "Warning", "Please select exactly one dataset, or enable 'Sum'.")
+                    return
+
+                # --- Multi-pass: pass all selected curves at once ---
+                try:
+                    deg = int(self.combo_poly.currentText())
+                except Exception:
+                    deg = 2
+                try:
+                    pre = float(self.spin_preedge.value()) / 100.0
+                except Exception:
+                    pre = 0.12
+
+                # Post-normalization mode
+                norm_mode = "None"
+                try:
+                    if hasattr(self, "combo_post_norm") and self.combo_post_norm.isEnabled():
+                        norm_mode = str(self.combo_post_norm.currentText())
+                except Exception:
+                    norm_mode = "None"
+
+                # Group backgrounds (fallback handled inside)
+                _x_common, bgs = self._compute_group_auto_backgrounds(visible_keys, deg=deg, pre_edge_percent=pre)
+                if bgs is None:
+                    bgs = {}
+
+                # If Area post-normalization is active, equalize the *area-normalized jump* across the group
+                # by adding a zero-area tilt term to the per-spectrum background.
+                try:
+                    m = str(norm_mode).strip().lower()
+                    _equalize_jump = m in ("area", "area=1")
+                except Exception:
+                    _equalize_jump = False
+
+                if _equalize_jump and len(visible_keys) >= 2:
+                    # Coupled group constraint for Area post-normalization:
+                    # - pre-edge baseline after BG subtraction is set to 0 for each spectrum
+                    # - jump after BG subtraction and Area-normalization is equalized across the group
+                    # - optionally, pre-edge slope after BG subtraction is also matched across the group
+                    try:
+                        items_simple = {}
+                        for key in visible_keys:
+                            parts = key.split("##", 1)
+                            if len(parts) != 2:
+                                continue
+                            abs_path, hdf5_path = parts
+                            parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+                            y_data = self.plot_data.get(key)
+                            if y_data is None:
+                                continue
+                            x_data = lookup_energy(self, abs_path, parent, len(y_data))
+                            y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
+                            mlen = min(len(x_data), len(y_proc))
+                            if mlen < 3:
+                                continue
+                            x_use = np.asarray(x_data[:mlen], dtype=float).ravel()
+                            y_use = np.asarray(y_proc[:mlen], dtype=float).ravel()
+                            bg = bgs.get(key)
+                            if bg is None:
+                                bg = self._apply_automatic_bg_new(x_use, y_use, deg=deg, pre_edge_percent=pre, do_plot=False)
+                            bg = np.asarray(bg, dtype=float).ravel()[:mlen]
+                            items_simple[key] = (x_use, y_use, bg)
+
+                        _match_slope = False
+                        try:
+                            scb = getattr(self, "chk_group_bg_slope", None)
+                            if scb is not None and scb.isEnabled() and scb.isChecked():
+                                _match_slope = True
+                        except Exception:
+                            _match_slope = False
+
+                        adjusted, msg = self._group_equalize_area_jump_and_zero_preedge(
+                            items_simple, pre=float(pre), match_preedge_slope=bool(_match_slope)
+                        )
+                        for k, (_x_u, _y_u, bg_u) in adjusted.items():
+                            bgs[k] = bg_u
+                        if msg:
+                            try:
+                                self.statusBar().showMessage(msg, 6000)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                added = 0
+                skipped = 0
+
+                for key in visible_keys:
+                    storage_key = key
+                    if storage_key in self.plotted_curves:
+                        skipped += 1
+                        continue
+
+                    # Build x/y (normalized, bg-subtracted, post-normalized)
+                    parts = key.split("##", 1)
+                    if len(parts) != 2:
+                        skipped += 1
+                        continue
+                    abs_path, hdf5_path = parts
+                    parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+                    y_data = self.plot_data.get(key)
+                    if y_data is None:
+                        skipped += 1
+                        continue
+                    x_data = lookup_energy(self, abs_path, parent, len(y_data))
+                    y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
+                    mlen = min(len(x_data), len(y_proc))
+                    if mlen <= 1:
+                        skipped += 1
+                        continue
+                    main_x = np.asarray(x_data[:mlen], dtype=float).ravel()
+                    main_y = np.asarray(y_proc[:mlen], dtype=float).ravel()
+
+                    bg = bgs.get(key)
+                    if bg is None:
+                        bg = self._apply_automatic_bg_new(main_x, main_y, deg=deg, pre_edge_percent=pre, do_plot=False)
+                    bg = np.asarray(bg, dtype=float).ravel()[:mlen]
+                    subtracted = main_y - bg
+                    try:
+                        from . import processing as _p
+                        subtracted = _p._proc_safe_post_normalize(self, main_x, subtracted, norm_mode)
+                    except Exception:
+                        pass
+                    main_y = subtracted
+
+                    # Build label + metadata
+                    source_file = abs_path
+                    source_entry = hdf5_path
+                    detector_name = ""
+                    path_parts = hdf5_path.split("/")
+                    if len(path_parts) >= 3 and path_parts[1] == "measurement":
+                        entry = path_parts[0]
+                        channel_name = path_parts[-1]
+                        origin_label = f"{entry}: {channel_name}"
+                        detector_name = channel_name
+                    else:
+                        origin_label = hdf5_path
+                        detector_name = path_parts[-1] if path_parts else hdf5_path
+
+                    metadata_parts = []
+                    try:
+                        nm = str(norm_mode).lower()
+                        if nm and nm != "none":
+                            metadata_parts.append(nm)
+                    except Exception:
+                        pass
+                    if self.chk_normalize.isChecked():
+                        metadata_parts.append("normalized")
+                    metadata_parts.append("bg subtracted")
+                    if metadata_parts:
+                        origin_label += " (" + ", ".join(metadata_parts) + ")"
+
+                    if not hasattr(self, "plotted_metadata") or not isinstance(getattr(self, "plotted_metadata", None), dict):
+                        self.plotted_metadata = {}
+                    self.plotted_metadata[storage_key] = {
+                        "detector": detector_name or "",
+                        "source_file": source_file or "",
+                        "source_entry": source_entry or "",
+                        "post_normalization": norm_mode,
+                        "is_reference": False,
+                    }
+
+                    # Add to plot + list
+                    self.custom_labels[storage_key] = None
+                    line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>")
+                    self.plotted_curves.add(storage_key)
+                    self.plotted_lines[storage_key] = line
+                    self.original_line_data[storage_key] = (np.asarray(main_x).copy(), np.asarray(main_y).copy())
+
+                    item = QListWidgetItem()
+                    try:
+                        item.setData(Qt.UserRole, storage_key)
+                    except Exception:
+                        pass
+                    CurveListItemWidget = globals().get("CurveListItemWidget", None)
+                    if CurveListItemWidget:
+                        widget = CurveListItemWidget(origin_label, line.get_color(), storage_key)
+                        widget.colorChanged.connect(self.change_curve_color)
+                        widget.visibilityChanged.connect(self.change_curve_visibility)
+                        widget.styleChanged.connect(self.change_curve_style)
+                        if hasattr(widget, "removeRequested"):
+                            widget.removeRequested.connect(self.on_curve_remove_requested)
+                        if hasattr(widget, "addToLibraryRequested"):
+                            try:
+                                self.on_add_to_library_requested
+                            except AttributeError:
+                                pass
+                            else:
+                                widget.addToLibraryRequested.connect(self.on_add_to_library_requested)
+                        item.setSizeHint(widget.sizeHint())
+                        self.plotted_list.addItem(item)
+                        self.plotted_list.setItemWidget(item, widget)
+                    else:
+                        item.setText(origin_label)
+                        self.plotted_list.addItem(item)
+
+                    added += 1
+
+                if added:
+                    try:
+                        self.data_tabs.setCurrentIndex(2)
+                    except Exception:
+                        pass
+                    self.update_legend()
+
+                if skipped and added == 0:
+                    QMessageBox.warning(self, "Warning", "No new curves were passed (they may already be present in Plotted Data).")
                 return
+
             key = visible_keys[0]
 
         # Use synthetic key for summed curve so it doesn't collide with first component
@@ -444,8 +722,15 @@ class PlottingMixin:
             background = self._compute_background(main_x, main_y)
             subtracted = main_y - background
             try:
-                from . import processing  # local import to avoid circularity issues
-                subtracted = processing._proc_safe_post_normalize(self, main_x, subtracted, norm_mode)
+                # IMPORTANT:
+                # Do NOT bind a local name called `processing` in this method.
+                # This method also uses the module-level `processing` import earlier
+                # (e.g. for multi-pass). A local import like `from . import processing`
+                # would make `processing` a local variable for the entire function and
+                # can trigger UnboundLocalError on code paths that reference it before
+                # the local import executes.
+                from . import processing as _p
+                subtracted = _p._proc_safe_post_normalize(self, main_x, subtracted, norm_mode)
             except Exception:
                 pass
             main_y = subtracted
@@ -602,7 +887,8 @@ class PlottingMixin:
         m.setdefault("source_file", str(m.get("source_file", "") or ""))
         m.setdefault("source_entry", str(m.get("source_entry", "") or ""))
         m.setdefault("post_normalization", str(m.get("post_normalization", "") or "None"))
-        m["is_reference"] = True
+        m["is_reference"] = bool(m.get("is_reference", True))
+        m["is_imported"] = bool(m.get("is_imported", False))
         self.plotted_metadata[storage_key] = m
 
         # Create list item with curve controls
@@ -751,6 +1037,64 @@ class PlottingMixin:
                 self.canvas_plotted.draw()
             except Exception:
                 pass
+
+
+    def _get_plotted_legend_mode(self) -> str:
+        """Return the current legend mode for Plotted Data."""
+        # Prefer the UI combo box if present
+        try:
+            cb = getattr(self, "legend_mode_combo", None)
+            if cb is not None:
+                return str(cb.currentText() or "User-defined")
+        except Exception:
+            pass
+        try:
+            return str(getattr(self, "plotted_legend_mode", "User-defined") or "User-defined")
+        except Exception:
+            return "User-defined"
+
+
+    def set_plotted_legend_mode(self, mode: str):
+        """Set legend mode: None / User-defined / Entry number."""
+        try:
+            self.plotted_legend_mode = str(mode or "User-defined")
+        except Exception:
+            self.plotted_legend_mode = "User-defined"
+
+        m = str(self._get_plotted_legend_mode() or "User-defined").strip().lower()
+        ax = getattr(self, "plotted_ax", None)
+        if ax is None:
+            return
+
+        # Remove legend entirely in 'None' mode
+        if m in ("none", "off", "no"):
+            try:
+                self.plotted_legend_visible = False
+            except Exception:
+                pass
+            try:
+                leg = ax.get_legend()
+                if leg is not None:
+                    leg.remove()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "canvas_plotted"):
+                    self.canvas_plotted.draw()
+            except Exception:
+                pass
+            return
+
+        # Otherwise ensure legend exists and is visible
+        try:
+            self.plotted_legend_visible = True
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "update_legend"):
+                self.update_legend()
+        except Exception:
+            pass
 
 
     def toggle_plotted_annotation(self, visible: bool):
@@ -979,7 +1323,14 @@ class PlottingMixin:
                     pass
             return
 
-        # 2) Legend text renaming
+        # 2) Legend text renaming (only in 'User-defined' mode)
+        try:
+            mode = str(self._get_plotted_legend_mode() or "User-defined").strip().lower()
+        except Exception:
+            mode = "user-defined"
+        if mode not in ("user-defined", "user", "custom"):
+            return
+
         ax = getattr(self, "plotted_ax", None)
         if ax is None:
             return
@@ -1007,9 +1358,81 @@ class PlottingMixin:
                         self.custom_labels[key] = new_text
                         break
                 self.update_legend()
+
+
+    def _legend_label_from_entry_number(self, key: str, line=None) -> str:
+        """Derive a short legend label from an entry identifier.
+
+        Example: 'entry6567/...' or 'entry6567: TEY' -> '6567'.
+        If no entry number can be detected, falls back to an existing label.
+        """
+        import re
+        candidates = []
+        try:
+            meta = getattr(self, "plotted_metadata", {}).get(key, {}) if hasattr(self, "plotted_metadata") else {}
+            if isinstance(meta, dict):
+                candidates.append(meta.get("source_entry") or "")
+                candidates.append(meta.get("source_file") or "")
+        except Exception:
+            pass
+        try:
+            if line is not None and hasattr(line, "get_label"):
+                candidates.append(line.get_label() or "")
+        except Exception:
+            pass
+        candidates.append(str(key or ""))
+
+        for txt in candidates:
+            try:
+                s = str(txt)
+            except Exception:
+                continue
+            if not s:
+                continue
+            # Try the first path segment if present
+            seg = s.split("/", 1)[0]
+            m = re.search(r"entry\s*(\d+)", seg, flags=re.IGNORECASE)
+            if not m:
+                m = re.search(r"entry\s*(\d+)", s, flags=re.IGNORECASE)
+            if m:
+                return m.group(1)
+        # Fallback
+        try:
+            if line is not None and hasattr(line, "get_label"):
+                return str(line.get_label() or key)
+        except Exception:
+            pass
+        return str(key)
     def update_legend(self):
         """Rebuild the legend so its order follows the Plotted list (visible curves only)."""
         try:
+            # Legend mode: None / User-defined / Entry number
+            try:
+                mode = str(self._get_plotted_legend_mode() or "User-defined").strip().lower()
+            except Exception:
+                mode = "user-defined"
+
+            # Remove legend entirely in 'None' mode
+            if mode in ("none", "off", "no"):
+                ax = getattr(self, "plotted_ax", None)
+                if ax is not None:
+                    try:
+                        leg = ax.get_legend()
+                        if leg is not None:
+                            leg.remove()
+                    except Exception:
+                        pass
+                try:
+                    self.plotted_legend_visible = False
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, "canvas_plotted"):
+                        self.canvas_plotted.draw()
+                except Exception:
+                    pass
+                return
+
             order = []
             if hasattr(self, "plotted_list") and self.plotted_list is not None:
                 from .widgets.curve_item import CurveListItemWidget
@@ -1077,12 +1500,18 @@ class PlottingMixin:
                 if line is not None and line.get_visible():
                     handles.append(line)
                     lbl = None
-                    try:
-                        lbl = getattr(self, "custom_labels", {}).get(key)
-                    except Exception:
-                        lbl = None
-                    if not lbl:
-                        lbl = line.get_label() or "<select curve name>"
+                    if mode in ("entry number", "entry", "entry-number", "entry_id", "entry id", "id"):
+                        try:
+                            lbl = self._legend_label_from_entry_number(key, line)
+                        except Exception:
+                            lbl = None
+                    else:
+                        try:
+                            lbl = getattr(self, "custom_labels", {}).get(key)
+                        except Exception:
+                            lbl = None
+                        if not lbl:
+                            lbl = line.get_label() or "<select curve name>"
                     line.set_label(lbl)
                     labels.append(lbl)
 
@@ -1145,10 +1574,174 @@ class PlottingMixin:
 
     def update_pass_button_state(self):
         try:
-            cond = bool(getattr(self, "chk_sum", None) and self.chk_sum.isChecked())
+            cond_sum = bool(getattr(self, "chk_sum", None) and self.chk_sum.isChecked())
             vc = self.visible_curves_count()
+
+            # Group Auto-BG multi-pass condition:
+            # - multiple curves are selected (checked)
+            # - sum is OFF
+            # - Automatic BG
+            # - background subtraction is ON
+            # - group background checkbox is ON
+            group_cond = False
+            try:
+                if (not cond_sum) and vc >= 2:
+                    mode = str(getattr(self, "combo_bg").currentText()) if hasattr(self, "combo_bg") else ""
+                    if mode == "Automatic" and getattr(self, "chk_show_without_bg", None) is not None and self.chk_show_without_bg.isChecked():
+                        cb = getattr(self, "chk_group_bg", None)
+                        if cb is not None and cb.isEnabled() and cb.isChecked():
+                            group_cond = True
+            except Exception:
+                group_cond = False
+
             if getattr(self, "pass_button", None):
-                self.pass_button.setEnabled(bool(cond or vc == 1))
+                self.pass_button.setEnabled(bool(cond_sum or vc == 1 or group_cond))
+        except Exception:
+            pass
+
+    def _on_group_bg_checkbox_toggled(self, state):
+        """Remember user choice for group background and update the processed plot."""
+        try:
+            self._group_bg_user_choice = (state == Qt.Checked)
+        except Exception:
+            pass
+        try:
+            self.update_plot_processed()
+        except Exception:
+            pass
+
+    def _on_group_bg_slope_checkbox_toggled(self, state):
+        """Remember user choice for group pre-edge slope matching and update the processed plot."""
+        try:
+            self._group_bg_slope_user_choice = (state == Qt.Checked)
+        except Exception:
+            pass
+        try:
+            self.update_plot_processed()
+        except Exception:
+            pass
+
+    def _update_group_bg_checkbox_state(self, visible_curves: int, mode_text: str):
+        """Enable/disable and auto-default the 'group background' checkbox.
+
+        Design goals:
+        - Only usable when BG mode is Automatic AND >=2 curves are selected.
+        - Default to checked when selection transitions from 1 -> 2+.
+        - If user manually toggles it while in 2+ mode, keep their choice until selection drops back to 0/1.
+        """
+        cb = getattr(self, "chk_group_bg", None)
+        if cb is None:
+            return
+        try:
+            mode = str(mode_text or "")
+        except Exception:
+            mode = ""
+
+        # Initialize state trackers
+        prev_multi = bool(getattr(self, "_group_bg_prev_multi", False))
+        user_choice = getattr(self, "_group_bg_user_choice", None)
+
+        multi_now = (visible_curves >= 2)
+        usable_now = multi_now and (mode == "Automatic")
+
+        # Reset remembered manual choice when leaving multi-selection
+        if not multi_now:
+            user_choice = None
+            try:
+                setattr(self, "_group_bg_user_choice", None)
+            except Exception:
+                pass
+
+        # Apply UI state without firing the user-choice handler
+        try:
+            cb.blockSignals(True)
+            cb.setEnabled(bool(usable_now))
+            if not usable_now:
+                cb.setChecked(False)
+            else:
+                # Default to checked when entering multi-selection (first time)
+                if (not prev_multi) and multi_now and user_choice is None:
+                    cb.setChecked(True)
+                    setattr(self, "_group_bg_user_choice", True)
+                elif user_choice is not None:
+                    cb.setChecked(bool(user_choice))
+                else:
+                    # No remembered choice but already in multi mode: keep current checkbox state.
+                    pass
+        finally:
+            try:
+                cb.blockSignals(False)
+            except Exception:
+                pass
+
+        try:
+            setattr(self, "_group_bg_prev_multi", bool(multi_now))
+        except Exception:
+            pass
+
+        # Keep the related 'Match pre-edge slope' checkbox in sync
+        try:
+            self._update_group_bg_slope_checkbox_state(visible_curves=int(visible_curves), mode_text=str(mode_text))
+        except Exception:
+            pass
+
+    def _update_group_bg_slope_checkbox_state(self, visible_curves: int, mode_text: str):
+        """Enable/disable the 'Match pre-edge slope' checkbox.
+
+        This option is only meaningful when:
+        - BG mode is Automatic
+        - >=2 curves are selected
+        - Group background checkbox is enabled & checked
+
+        Default is OFF (unchecked). If the user manually toggles it while in multi-selection,
+        keep their choice until selection drops back to 0/1.
+        """
+        cb = getattr(self, "chk_group_bg_slope", None)
+        if cb is None:
+            return
+
+        try:
+            mode = str(mode_text or "")
+        except Exception:
+            mode = ""
+
+        # Determine whether group BG is currently usable/active
+        group_cb = getattr(self, "chk_group_bg", None)
+        group_ok = bool(group_cb is not None and group_cb.isEnabled() and group_cb.isChecked())
+
+        prev_multi = bool(getattr(self, "_group_bg_slope_prev_multi", False))
+        user_choice = getattr(self, "_group_bg_slope_user_choice", None)
+
+        multi_now = (int(visible_curves) >= 2)
+        usable_now = multi_now and (mode == "Automatic") and group_ok
+
+        if not multi_now:
+            user_choice = None
+            try:
+                setattr(self, "_group_bg_slope_user_choice", None)
+            except Exception:
+                pass
+
+        try:
+            cb.blockSignals(True)
+            cb.setEnabled(bool(usable_now))
+            if not usable_now:
+                cb.setChecked(False)
+            else:
+                # Default is OFF when entering multi-selection.
+                if (not prev_multi) and multi_now and user_choice is None:
+                    cb.setChecked(False)
+                    setattr(self, "_group_bg_slope_user_choice", False)
+                elif user_choice is not None:
+                    cb.setChecked(bool(user_choice))
+        finally:
+            try:
+                cb.blockSignals(False)
+            except Exception:
+                pass
+
+        try:
+            setattr(self, "_group_bg_slope_prev_multi", bool(multi_now))
         except Exception:
             pass
 
@@ -1177,20 +1770,114 @@ class PlottingMixin:
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Usage – FlexPES NEXAFS Plotter")
-        dlg.resize(800, 600)
-        dlg.setSizeGripEnabled(True)  # optional: shows a size grip in the corner
+        dlg.resize(900, 650)
+        dlg.setSizeGripEnabled(True)
+        # Enable maximize button on the dialog window.
+        try:
+            dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowMaximizeButtonHint)
+        except Exception:
+            pass
 
         layout = QVBoxLayout(dlg)
+
+        # --- Controls row: font size + maximize toggle ---------------------------------
+        controls_row = QHBoxLayout()
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.setSpacing(8)
+        controls_row.addWidget(QLabel("Font size:"))
+        font_spin = QSpinBox()
+        font_spin.setRange(8, 28)
+        font_spin.setSingleStep(1)
+        # Default font size for Usage window
+        font_spin.setValue(18)
+        font_spin.setToolTip("Change the font size used in this help window.")
+        controls_row.addWidget(font_spin)
+        controls_row.addStretch(1)
+        btn_max = QPushButton("Maximize")
+        btn_max.setToolTip("Maximize or restore this window")
+        controls_row.addWidget(btn_max)
+        layout.addLayout(controls_row)
+
+        splitter = QSplitter(Qt.Horizontal, dlg)
+
+        # Table of contents (clickable headings)
+        toc = QTreeWidget()
+        toc.setHeaderHidden(True)
+        toc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        toc.setMinimumWidth(200)
+        toc.setMaximumWidth(320)
+
+        # Main help browser
         browser = HelpBrowser()
-        
         browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Use HelpBrowser's internal wrapping strategy for consistent behaviour across Qt builds
-        # (FixedPixelWidth + resize-based wrap column).
-        
-        browser.setStyleSheet("font-size: 14px;")
-        # QTextBrowser expects HTML; get_usage_html() already returns HTML
+        browser.setStyleSheet("font-size: 18px;")
         browser.setHtml(usage_html)
-        layout.addWidget(browser)
+
+        # Build TOC from extracted heading anchors (H1/H2)
+        try:
+            toc.clear()
+            current_h1 = None
+            for level, title, anchor in getattr(browser, "_help_anchors", []) or []:
+                item = QTreeWidgetItem([title])
+                item.setData(0, Qt.UserRole, anchor)
+                if level == 1:
+                    toc.addTopLevelItem(item)
+                    current_h1 = item
+                else:
+                    if current_h1 is None:
+                        toc.addTopLevelItem(item)
+                    else:
+                        current_h1.addChild(item)
+            toc.expandAll()
+
+            def _jump_to_section(item, _col=0):
+                anchor = item.data(0, Qt.UserRole)
+                if anchor:
+                    browser.scrollToAnchor(str(anchor))
+
+            toc.itemClicked.connect(_jump_to_section)
+        except Exception:
+            pass
+
+        splitter.addWidget(toc)
+        splitter.addWidget(browser)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([240, 660])
+
+        layout.addWidget(splitter)
+
+        # Wire up font size changes (apply to both TOC and browser for a consistent look)
+        def _apply_help_font(px: int):
+            try:
+                px = int(px)
+            except Exception:
+                px = 14
+            try:
+                browser.setStyleSheet(f"font-size: {px}px;")
+            except Exception:
+                pass
+            try:
+                toc.setStyleSheet(f"font-size: {px}px;")
+            except Exception:
+                pass
+
+        font_spin.valueChanged.connect(_apply_help_font)
+
+        # Maximize/restore button (in addition to the window's own maximize control).
+        def _toggle_maximize():
+            try:
+                if dlg.isMaximized():
+                    dlg.showNormal()
+                    btn_max.setText("Maximize")
+                else:
+                    dlg.showMaximized()
+                    btn_max.setText("Restore")
+            except Exception:
+                pass
+
+        btn_max.clicked.connect(_toggle_maximize)
+
         dlg.exec_()
 
 
@@ -1292,6 +1979,9 @@ class PlottingMixin:
             return
         data = item.data(0, Qt.UserRole)
         if not data:
+            return
+        # UserRole payload must be a (abs_path, hdf5_path) tuple
+        if not isinstance(data, tuple) or len(data) != 2:
             return
         abs_path, hdf5_path = data
         if abs_path not in self.hdf5_files:
@@ -1422,10 +2112,470 @@ class PlottingMixin:
             line.dataset_key = combined_label
         self.proc_ax.set_xlabel("Photon energy (eV)")
 
+    def _visible_processed_keys(self):
+        """Return list of dataset keys currently visible (checked) in the Processed Data tree."""
+        try:
+            return [k for k in getattr(self, "plot_data", {}) if getattr(self, "raw_visibility", {}).get(k, False)]
+        except Exception:
+            return []
+
+    def _compute_group_auto_backgrounds(self, keys, deg: int, pre_edge_percent: float):
+        """Compute *per-spectrum* automatic backgrounds for a group.
+
+        This helper exists mainly for the multi-curve "group BG" plotting path.
+        It intentionally does **not** force a strictly shared background shape.
+        Instead, it computes the same per-spectrum Automatic BG as in the single
+        spectrum workflow (using :meth:`_apply_automatic_bg_new` with
+        ``do_plot=False``).
+
+        Returns:
+            (x_common, backgrounds_dict)
+            - x_common is returned only if all curves share the same energy grid.
+              Otherwise it is ``None``.
+            - backgrounds_dict maps each dataset key to its background array.
+        """
+        import numpy as np
+
+        if not keys:
+            return None, None
+
+        x_list = []
+        bgs = {}
+
+        for key in keys:
+            parts = key.split("##", 1)
+            if len(parts) != 2:
+                continue
+            abs_path, hdf5_path = parts
+            parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+            y_data = self.plot_data.get(key)
+            if y_data is None:
+                continue
+            x_data = lookup_energy(self, abs_path, parent, len(y_data))
+            y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
+            mlen = min(len(x_data), len(y_proc))
+            if mlen < 3:
+                continue
+            x_use = np.asarray(x_data[:mlen], dtype=float).ravel()
+            y_use = np.asarray(y_proc[:mlen], dtype=float).ravel()
+            bg = self._apply_automatic_bg_new(x_use, y_use, deg=int(deg), pre_edge_percent=float(pre_edge_percent), do_plot=False)
+            bgs[key] = np.asarray(bg, dtype=float).ravel()[:mlen]
+            x_list.append(x_use)
+
+        if not bgs:
+            return None, None
+
+        # Return a common grid only if identical (for optional markers)
+        x_common = None
+        try:
+            x0 = x_list[0]
+            same = True
+            for xx in x_list[1:]:
+                if xx.size != x0.size or (not np.allclose(xx, x0, rtol=0, atol=1e-9, equal_nan=True)):
+                    same = False
+                    break
+            if same:
+                x_common = x0
+        except Exception:
+            x_common = None
+
+        return x_common, bgs
+
+    def _group_equalize_area_jump_and_zero_preedge(self, items_simple: dict, pre: float, match_preedge_slope: bool = False):
+        """Adjust *per-spectrum* automatic backgrounds in group mode.
+
+        This routine is used when multiple spectra are selected and the user
+        intends to apply **Area** post-normalization. It modifies each spectrum's
+        background so that:
+
+        - The **pre-edge baseline after BG subtraction is 0** (per spectrum).
+        - The **jump after BG subtraction and Area-normalization** is the same
+          across the group (median target).
+        - Optionally (when match_preedge_slope=True), the **pre-edge slope after BG subtraction**
+          is also made consistent across the group (median target).
+
+        Notes:
+            - Backgrounds are not forced to share a common polynomial shape.
+            - The correction uses an affine term (linear + constant) per spectrum.
+        """
+        import numpy as np
+
+        if not items_simple or len(items_simple) < 2:
+            return items_simple, None
+
+        # Helper: find pre/post windows on a finite-length array
+        def _windows(n: int):
+            n = int(n)
+            if n < 3:
+                return None
+            M = max(1, int(float(pre) * n))
+            M = min(M, n - 1)
+            i_start = max(M + 1, int(0.95 * n))
+            if i_start >= n - 1:
+                i_start = max(n - 2, 0)
+            return M, i_start
+
+        # First pass: compute per-spectrum baseline-zero shift and the current ratio R0 = jump/area.
+        ratios = []
+        slopes = []  # only used when match_preedge_slope=True
+        per = {}
+        for key, (x_use, y_use, bg) in items_simple.items():
+            x_use = np.asarray(x_use, dtype=float).ravel()
+            y_use = np.asarray(y_use, dtype=float).ravel()
+            bg = np.asarray(bg, dtype=float).ravel()
+            n = min(x_use.size, y_use.size, bg.size)
+            if n < 3:
+                continue
+            x_use = x_use[:n]; y_use = y_use[:n]; bg = bg[:n]
+            f = np.isfinite(x_use) & np.isfinite(y_use) & np.isfinite(bg)
+            xf = x_use[f]
+            if xf.size < 3:
+                continue
+            yf = y_use[f]
+            bgf = bg[f]
+
+            win = _windows(int(xf.size))
+            if win is None:
+                continue
+            M, i_start = win
+
+            # Center x for numerical stability.
+            xbar = float(np.nanmean(xf))
+            t = xf - xbar
+
+            # Baseline-zero constant for beta=0
+            r0 = float(np.nanmean((yf - bgf)[:M]))
+            s0 = (yf - bgf) - r0  # pre-edge mean is ~0
+
+            area0 = float(np.trapz(s0, xf))
+            if (not np.isfinite(area0)) or abs(area0) < 1e-15:
+                continue
+            jump0 = float(np.nanmean(s0[i_start:]))  # pre is 0 by construction
+            ratio0 = jump0 / area0
+            if not np.isfinite(ratio0):
+                continue
+
+            # Terms needed for the beta solve under the constraint that pre-edge remains 0.
+            mp = float(np.nanmean(t[:M]))
+            tt = t - mp  # this ensures the pre-edge mean of the correction term is 0
+            T = float(np.trapz(tt, xf))
+            P = float(np.nanmean(tt[i_start:]))
+
+            # Optional: pre-edge slope of the BG-subtracted signal (after baseline shift).
+            m0 = None
+            phi2 = None
+            T2 = 0.0
+            P2 = 0.0
+            if bool(match_preedge_slope):
+                try:
+                    if int(M) >= 2:
+                        m0 = float(np.polyfit(xf[:M], s0[:M], 1)[0])
+                    else:
+                        m0 = float(np.polyfit(xf[: max(2, int(M))], s0[: max(2, int(M))], 1)[0])
+                except Exception:
+                    m0 = None
+
+                # A localized pre-edge basis function: w(x)*(x-x_pre_mean)
+                # w=1 in pre-edge, then smoothly tapers to 0 well before the post-edge window.
+                try:
+                    x_pre_mean = float(np.nanmean(xf[:M]))
+                    w = np.zeros_like(xf, dtype=float)
+                    w[:M] = 1.0
+                    # Choose a taper length that (if possible) ends before the post window.
+                    k_suggest = max(5, int(0.05 * float(xf.size)))
+                    k_max = max(1, int(i_start) - int(M) - 1)
+                    K = int(min(k_suggest, k_max))
+                    if K < 1:
+                        K = 1
+                    end = min(int(M) + int(K), int(xf.size) - 1)
+                    # Build cosine taper from 1 -> 0 across [M, end]
+                    tt_idx = np.arange(0, (end - int(M)) + 1, dtype=float)
+                    denomK = float(max(1, (end - int(M))))
+                    w[int(M) : end + 1] = 0.5 * (1.0 + np.cos(np.pi * tt_idx / denomK))
+                    phi2 = w * (xf - x_pre_mean)
+                    T2 = float(np.trapz(phi2, xf))
+                    P2 = float(np.nanmean(phi2[i_start:]))
+                except Exception:
+                    phi2 = None
+                    T2 = 0.0
+                    P2 = 0.0
+
+                if m0 is not None and np.isfinite(m0):
+                    slopes.append(float(m0))
+
+            ratios.append(ratio0)
+            per[key] = {
+                "n": n,
+                "f": f,
+                "xf": xf,
+                "yf": yf,
+                "bgf": bgf,
+                "xbar": xbar,
+                "r0": r0,
+                "mp": mp,
+                "s0": s0,
+                "area0": area0,
+                "jump0": jump0,
+                "T": T,
+                "P": P,
+                "m0": m0,
+                "phi2": phi2,
+                "T2": T2,
+                "P2": P2,
+            }
+
+        if len(ratios) < 2:
+            return items_simple, None
+
+        R_target = float(np.median(np.asarray(ratios, dtype=float)))
+
+        m_target = None
+        if bool(match_preedge_slope):
+            try:
+                if len(slopes) >= 2:
+                    m_target = float(np.median(np.asarray(slopes, dtype=float)))
+            except Exception:
+                m_target = None
+
+        # Second pass: solve for per-spectrum corrections.
+        # Default (match_preedge_slope=False): solve beta (linear) for each spectrum so that (jump/area)
+        # matches the target while keeping pre-edge baseline at 0.
+        # If match_preedge_slope=True and m_target is available: additionally solve a localized pre-edge
+        # correction coefficient so that the pre-edge slope after BG subtraction matches the group target.
+        adjusted = {}
+        changed = 0
+        for key, (x_use, y_use, bg) in items_simple.items():
+            if key not in per:
+                adjusted[key] = (x_use, y_use, bg)
+                continue
+            info = per[key]
+            x_use = np.asarray(x_use, dtype=float).ravel()[: info["n"]]
+            bg = np.asarray(bg, dtype=float).ravel()[: info["n"]]
+            f = info["f"]
+            xf = info["xf"]
+            yf = info["yf"]
+            bgf = info["bgf"]
+            xbar = float(info["xbar"])
+            r0 = float(info["r0"])
+            mp = float(info["mp"])
+            area0 = float(info["area0"])
+            jump0 = float(info["jump0"])
+            T = float(info["T"])
+            P = float(info["P"])
+
+            # --- Optional: match pre-edge slope as well (3 constraints, 3 DOF: constant + global linear + localized pre-edge linear) ---
+            if bool(match_preedge_slope) and (m_target is not None) and (info.get("phi2") is not None) and (info.get("m0") is not None):
+                try:
+                    A11 = (R_target * T - P)
+                    A12 = (R_target * float(info.get("T2", 0.0)) - float(info.get("P2", 0.0)))
+                    rhs1 = (R_target * area0 - jump0)
+                    rhs2 = (float(info["m0"]) - float(m_target))
+                    det = (A11 - A12)
+                    if (not np.isfinite(det)) or abs(det) < 1e-15:
+                        raise ZeroDivisionError("singular slope/ratio system")
+                    u1 = (rhs1 - A12 * rhs2) / det
+                    u2 = rhs2 - u1
+                    if (not np.isfinite(u1)) or (not np.isfinite(u2)):
+                        raise ValueError("non-finite solution")
+                    # Constant term that keeps pre-edge baseline at 0
+                    u0 = r0 - float(u1) * mp
+                    phi2 = np.asarray(info["phi2"], dtype=float).ravel()
+                    bg_adj = bg.copy()
+                    bg_adj_f = bgf + float(u0) + float(u1) * (xf - xbar) + float(u2) * phi2
+                    bg_adj[f] = bg_adj_f
+                    adjusted[key] = (x_use, y_use, bg_adj)
+                    changed += 1
+                    continue
+                except Exception:
+                    # Fall back to the 2-parameter solution below
+                    pass
+
+            # --- Default 2-parameter equalization (baseline + jump/area) ---
+            denom = (R_target * T - P)
+            if (not np.isfinite(denom)) or abs(denom) < 1e-15:
+                # Fallback: only baseline-zero shift
+                bg_adj = bg.copy()
+                bg_adj[f] = bgf + r0
+                adjusted[key] = (x_use, y_use, bg_adj)
+                continue
+
+            beta = (R_target * area0 - jump0) / denom
+            if not np.isfinite(beta):
+                bg_adj = bg.copy()
+                bg_adj[f] = bgf + r0
+                adjusted[key] = (x_use, y_use, bg_adj)
+                continue
+
+            # Constant term that keeps pre-edge baseline at 0 for the chosen beta.
+            c = r0 - float(beta) * mp
+
+            bg_adj = bg.copy()
+            bg_adj_f = bgf + float(beta) * (xf - xbar) + float(c)
+            bg_adj[f] = bg_adj_f
+            adjusted[key] = (x_use, y_use, bg_adj)
+            changed += 1
+
+        msg = None
+        if changed >= 2:
+            if bool(match_preedge_slope) and (m_target is not None):
+                msg = (
+                    f"Group BG: pre-edge=0, equalized jump after Area normalization (target={R_target:.4g}), "
+                    f"matched pre-edge slope (target={m_target:.4g})"
+                )
+            else:
+                msg = f"Group BG: pre-edge=0 and equalized jump after Area normalization (target={R_target:.4g})"
+
+        return adjusted, msg
+
+    def _plot_multiple_with_group_auto_bg(self):
+        """Plot multiple selected curves with group automatic background fitting."""
+        import numpy as np
+
+        self.proc_ax.clear()
+        self.reset_manual_mode()
+        try:
+            if getattr(self, "manual_bg_line", None) is not None:
+                self.manual_bg_line.remove()
+                self.manual_bg_line = None
+        except Exception:
+            pass
+
+        keys = self._visible_processed_keys()
+        if not keys:
+            return
+
+        # Compute group backgrounds; fall back to per-spectrum if group fit is not possible
+        try:
+            deg = int(self.combo_poly.currentText())
+        except Exception:
+            deg = 2
+        try:
+            pre = float(self.spin_preedge.value()) / 100.0
+        except Exception:
+            pre = 0.12
+
+        # Determine whether background subtraction is active
+        subtract = bool(getattr(self, "chk_show_without_bg", None) is not None and self.chk_show_without_bg.isChecked())
+
+        # Read the chosen post-normalization mode (even if the widget is disabled).
+        # In group mode we may want to "anticipate" area normalization when drawing BG lines.
+        norm_mode = "None"
+        try:
+            if hasattr(self, "combo_post_norm"):
+                norm_mode = str(self.combo_post_norm.currentText())
+        except Exception:
+            norm_mode = "None"
+
+        # Compute per-spectrum Automatic BG (same as single-spectrum auto), and collect x/y.
+        items = {}
+        for key in keys:
+            parts = key.split("##", 1)
+            if len(parts) != 2:
+                continue
+            abs_path, hdf5_path = parts
+            parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+            y_data = self.plot_data.get(key)
+            if y_data is None:
+                continue
+            x_data = lookup_energy(self, abs_path, parent, len(y_data))
+            y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
+            mlen = min(len(x_data), len(y_proc))
+            if mlen < 3:
+                continue
+            x_use = np.asarray(x_data[:mlen], dtype=float).ravel()
+            y_use = np.asarray(y_proc[:mlen], dtype=float).ravel()
+            bg = self._apply_automatic_bg_new(x_use, y_use, deg=deg, pre_edge_percent=pre, do_plot=False)
+            bg = np.asarray(bg, dtype=float).ravel()[:mlen]
+            items[key] = (x_use, y_use, bg, hdf5_path)
+
+        if not items:
+            return
+
+        # Optional marker: show pre-edge boundary if all curves share a common grid.
+        try:
+            x_common, _bgs = self._compute_group_auto_backgrounds(list(items.keys()), deg=deg, pre_edge_percent=pre)
+            if x_common is not None:
+                self._proc_last_x = np.asarray(x_common)
+        except Exception:
+            pass
+
+        # If user plans to Area-normalize after BG subtraction, equalize the *post-area-normalized jump*
+        # across the selected group by adding a per-spectrum zero-area tilt term to the background.
+        # This keeps the area (trapz) unchanged while correcting the step height after area normalization.
+        try:
+            m = str(norm_mode).strip().lower()
+            equalize_jump = m in ("area", "area=1")
+        except Exception:
+            equalize_jump = False
+
+        if equalize_jump and len(items) >= 2:
+            # Use a coupled correction so that each spectrum has zero pre-edge baseline after BG subtraction,
+            # and the jump after Area-normalization is the same across the selected group.
+            try:
+                simple = {k: (v[0], v[1], v[2]) for k, v in items.items()}
+                _match_slope = False
+                try:
+                    scb = getattr(self, "chk_group_bg_slope", None)
+                    if scb is not None and scb.isEnabled() and scb.isChecked():
+                        _match_slope = True
+                except Exception:
+                    _match_slope = False
+
+                adjusted, msg = self._group_equalize_area_jump_and_zero_preedge(
+                    simple, pre=float(pre), match_preedge_slope=bool(_match_slope)
+                )
+                for k, (x_u, y_u, bg_u) in adjusted.items():
+                    if k in items:
+                        _x0, _y0, _bg0, hdf5_path = items[k]
+                        items[k] = (x_u, y_u, bg_u, hdf5_path)
+                if msg:
+                    try:
+                        self.statusBar().showMessage(msg, 6000)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Plot all selected curves
+        for key, (x_use, y_use, bg, hdf5_path) in items.items():
+            if x_use.size == 0:
+                continue
+            if subtract:
+                yy = y_use - bg
+                try:
+                    from . import processing as _p
+                    yy = _p._proc_safe_post_normalize(self, x_use, yy, norm_mode)
+                except Exception:
+                    pass
+                line, = self.proc_ax.plot(x_use, yy, label=self.shorten_label(hdf5_path))
+            else:
+                line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path))
+                self.proc_ax.plot(x_use, bg, linestyle="--", linewidth=1.2, alpha=0.65, label="_bg")
+            try:
+                line.dataset_key = key
+            except Exception:
+                pass
+
     def update_plot_processed(self):
         self.proc_ax.clear()
         visible_curves = sum(1 for key in self.plot_data if self.raw_visibility.get(key, False))
-        if visible_curves > 1 and not self.chk_sum.isChecked():
+        mode = self.combo_bg.currentText() if hasattr(self, "combo_bg") else "None"
+        try:
+            self._update_group_bg_checkbox_state(int(visible_curves), str(mode))
+        except Exception:
+            pass
+
+        group_active = False
+        try:
+            if visible_curves > 1 and (not self.chk_sum.isChecked()) and str(mode) == "Automatic":
+                cb = getattr(self, "chk_group_bg", None)
+                if cb is not None and cb.isEnabled() and cb.isChecked():
+                    group_active = True
+        except Exception:
+            group_active = False
+
+        if visible_curves > 1 and not self.chk_sum.isChecked() and not group_active:
+            # Default behavior: multiple curves without sum -> show only normalized curves, no BG controls.
             self._toggle_bg_widgets(False)
             self._plot_multiple_no_bg()
             self.proc_ax.figure.tight_layout()
@@ -1436,6 +2586,31 @@ class PlottingMixin:
         else:
             self._toggle_bg_widgets(True)
 
+        # Group automatic background mode for multiple selected curves
+        if group_active:
+            try:
+                self._plot_multiple_with_group_auto_bg()
+            except Exception as ex:
+                print("Group Auto BG plotting failed:", ex)
+                # Fallback to the old behavior
+                self._plot_multiple_no_bg()
+            try:
+                self._draw_preedge_vline(getattr(self, "_proc_last_x", None))
+            except Exception:
+                pass
+            self.proc_ax.set_xlabel("Photon energy (eV)")
+            try:
+                self.proc_ax.figure.tight_layout()
+            except Exception:
+                pass
+            try:
+                self.canvas_proc.draw()
+            except Exception:
+                pass
+            self.update_pass_button_state()
+            self.update_proc_tree()
+            return
+
         main_x, main_y = self.compute_main_curve()
         if main_x is not None and main_y is not None:
             self.proc_ax.plot(main_x, main_y, label="Main curve")
@@ -1444,6 +2619,12 @@ class PlottingMixin:
         new_norm_state = self.chk_normalize.isChecked()
         new_len = len(main_y) if main_y is not None else 0
         mode = self.combo_bg.currentText()
+
+        # If we previously were in Manual BG mode, ensure we fully exit manual mode
+        # when switching back to Automatic/None. Otherwise the mouse handlers will
+        # keep treating clicks as manual-anchor drags and block the Auto pre-edge marker.
+        if mode != "Manual" and getattr(self, "manual_mode", False):
+            self.reset_manual_mode()
 
         if mode == "Manual" and main_y is not None:
             if (not self.manual_mode or self.manual_poly_degree is None or
@@ -1483,11 +2664,226 @@ class PlottingMixin:
         if self.chk_show_without_bg.isChecked() and main_x is not None and main_y is not None:
             self._show_subtracted_only(mode, main_x, main_y)
 
+        try:
+            if str(mode) == "Automatic" and main_x is not None:
+                import numpy as _np
+                self._proc_last_x = _np.asarray(main_x)
+                self._draw_preedge_vline(self._proc_last_x)
+        except Exception:
+            pass
+
         self.proc_ax.set_xlabel("Photon energy (eV)")
         self.proc_ax.figure.tight_layout()
         self.canvas_proc.draw()
         self.update_pass_button_state()
         self.update_proc_tree()
+
+
+    # ------------ Pre-edge marker (Processed Data) ------------
+    def _draw_preedge_vline(self, x):
+        """Draw or update the vertical pre-edge boundary marker on the Processed plot."""
+        import numpy as np
+        if x is None:
+            return
+        try:
+            x = np.asarray(x, dtype=float)
+            if x.size < 2:
+                return
+        except Exception:
+            return
+
+        # Compute index from current pre-edge %
+        try:
+            pre = float(getattr(self, "spin_preedge").value()) / 100.0
+        except Exception:
+            pre = 0.1
+        pre = max(0.001, min(0.999, pre))
+        idx = int(pre * len(x))
+        idx = max(1, min(idx, len(x) - 1))
+        x0 = float(x[idx])
+
+        # Remove old marker if axes got cleared
+        ln = getattr(self, "proc_preedge_line", None)
+        if ln is not None:
+            try:
+                if ln.axes is not self.proc_ax:
+                    ln = None
+            except Exception:
+                ln = None
+
+        if ln is None:
+            try:
+                ln = self.proc_ax.axvline(x0, linestyle=":", linewidth=1.2, alpha=0.8)
+                # Make the line reliably pickable/draggable across backends and HiDPI.
+                # Prefer using the artist's built-in hit-testing instead of pixel-space heuristics.
+                try:
+                    # Enable picking and enlarge pick radius (in points).
+                    ln.set_picker(True)
+                    if hasattr(ln, "set_pickradius"):
+                        ln.set_pickradius(10)
+                    else:
+                        # Older API fallback
+                        ln.set_picker(10)
+                except Exception:
+                    pass
+                self.proc_preedge_line = ln
+            except Exception:
+                return
+        else:
+            try:
+                ln.set_xdata([x0, x0])
+            except Exception:
+                pass
+
+    def _on_preedge_vline_press(self, event):
+        """Start dragging the pre-edge marker (Auto BG only).
+
+        Uses the artist's hit-testing (Line2D.contains) which is robust across
+        backends and HiDPI scaling.
+        """
+        import numpy as np
+        try:
+            # Only for Automatic background mode
+            if getattr(self, "combo_bg", None) is None:
+                return
+            if self.combo_bg.currentText() != "Automatic":
+                return
+            if event is None:
+                return
+            if getattr(event, "button", None) not in (1,):
+                return
+            # Prefer not to hard-require event.inaxes: on some backends/HiDPI
+            # configurations the press can arrive with inaxes=None even though
+            # the click was visually on the axes.
+            if getattr(self, "proc_ax", None) is None:
+                return
+
+            ln = getattr(self, "proc_preedge_line", None)
+            if ln is None:
+                return
+
+            # Prefer robust artist hit-testing (accounts for HiDPI/backend details)
+            try:
+                contains, _info = ln.contains(event)
+                if bool(contains):
+                    self._dragging_preedge = True
+                    return
+            except Exception:
+                pass
+
+            # Fallback: data/pixel-space tolerance (in case contains() fails)
+            try:
+                x0 = float(ln.get_xdata()[0])
+                ax = self.proc_ax
+                xlim = ax.get_xlim()
+                xr = abs(float(xlim[1]) - float(xlim[0]))
+                # generous tolerance: 3% of the visible range, but at least a few grid steps
+                tol = max(0.03 * xr, 1e-6)
+                x = getattr(self, "_proc_last_x", None)
+                if x is not None:
+                    x = np.asarray(x, dtype=float)
+                    if x.size >= 2:
+                        dx = np.nanmedian(np.diff(x))
+                        if np.isfinite(dx) and dx > 0:
+                            tol = max(tol, 3.0 * float(dx))
+                xevt = None
+                if getattr(event, "xdata", None) is not None and np.isfinite(event.xdata):
+                    xevt = float(event.xdata)
+                elif getattr(event, "x", None) is not None:
+                    # Convert display x (pixels) to data x
+                    try:
+                        y0, y1 = ax.get_ylim()
+                        ymid = 0.5 * (float(y0) + float(y1))
+                        ydisp = float(ax.transData.transform((0.0, ymid))[1])
+                        xevt = float(ax.transData.inverted().transform((float(event.x), ydisp))[0])
+                    except Exception:
+                        xevt = None
+                if xevt is None:
+                    return
+                if abs(float(xevt) - x0) <= tol:
+                    self._dragging_preedge = True
+            except Exception:
+                return
+        except Exception:
+            return
+
+    
+    def _on_preedge_vline_pick(self, event):
+        """Start dragging the pre-edge marker when the marker line is picked."""
+        try:
+            if getattr(self, "combo_bg").currentText() != "Automatic":
+                return
+            ln = getattr(self, "proc_preedge_line", None)
+            if ln is None:
+                return
+            if getattr(event, "artist", None) is not ln:
+                return
+            # Only left mouse button
+            me = getattr(event, "mouseevent", None)
+            if me is not None and getattr(me, "button", None) not in (1,):
+                return
+            self._dragging_preedge = True
+        except Exception:
+            return
+
+    def _on_preedge_vline_motion(self, event):
+        """Drag handler for the pre-edge marker."""
+        import numpy as np
+        if not getattr(self, "_dragging_preedge", False):
+            return
+        try:
+            ax = getattr(self, "proc_ax", None)
+            if ax is None:
+                return
+            # event.xdata can be None on some backend/HiDPI combos; fall back to pixel->data conversion.
+            x_new = None
+            if getattr(event, "xdata", None) is not None and np.isfinite(event.xdata):
+                x_new = float(event.xdata)
+            elif getattr(event, "x", None) is not None:
+                try:
+                    y0, y1 = ax.get_ylim()
+                    ymid = 0.5 * (float(y0) + float(y1))
+                    # Get display y at the midpoint, then invert transform for the mouse x.
+                    ydisp = float(ax.transData.transform((0.0, ymid))[1])
+                    x_new = float(ax.transData.inverted().transform((float(event.x), ydisp))[0])
+                except Exception:
+                    x_new = None
+            if x_new is None:
+                return
+            x = getattr(self, "_proc_last_x", None)
+            if x is None:
+                return
+            x = np.asarray(x, dtype=float)
+            if x.size < 2:
+                return
+            # Find nearest index
+            idx = int(np.argmin(np.abs(x - x_new)))
+            idx = max(1, min(idx, len(x) - 1))
+            pre_pct = 100.0 * (idx / float(len(x)))
+            pre_pct = max(0.1, min(99.9, pre_pct))
+            spin = getattr(self, "spin_preedge", None)
+            if spin is None:
+                return
+            # Avoid tiny oscillations
+            if abs(float(spin.value()) - pre_pct) >= 0.1:
+                spin.setValue(pre_pct)
+            # Move marker immediately for responsiveness
+            try:
+                ln = getattr(self, "proc_preedge_line", None)
+                if ln is not None:
+                    ln.set_xdata([float(x[idx]), float(x[idx])])
+                    self.canvas_proc.draw_idle()
+            except Exception:
+                pass
+        except Exception:
+            return
+
+    def _on_preedge_vline_release(self, event):
+        """Stop dragging the pre-edge marker."""
+        try:
+            self._dragging_preedge = False
+        except Exception:
+            pass
 
     # ------------ Misc helpers ------------
     def _toggle_bg_widgets(self, enabled: bool):

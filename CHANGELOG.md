@@ -108,3 +108,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - an example h5 file with typical structure used at FlexPES is added to the package in the \example_data folder along with a README.md file describing its structure.
 - upon pressing "Open HDF5 files" button, the opening dialog is pointing now by default to this example file.
 
+
+## [2.1.0] – 2025-12-24
+
+### Added
+- Now it is possible to fit background automatically to a group of selected XAS spectra consistently, keeping both area and the absorption jump the same for all spectra (new check box "Group BG"), and also making sure the pre-edge intensity is at zero (new check box "Match pre-edge slope").
+- The "Pass" button can work now also on a group of spectra, provided the "Group BG" check box is checked.
+- Selected pre-edge region on the "Processed Data" tab is marked now with a vertical line, which is mouse-draggable.
+- Legend on the "Plotted Data" panel can now be set automatically with the entry numbers.
+
+### Changed
+- Help -> Usage text is updated.
+- Help -> Usage dialog window appearance is improved: Content menu added, font size widget added, maximixation option added.
+

@@ -1,5 +1,32 @@
+"""Processing mixin for the FlexPES NEXAFS viewer.
+
+This module contains the ProcessingMixin and a few small helper functions.
+"""
+
 from .data import lookup_energy
-"""Auto-generated ProcessingMixin extracted from ui.py."""
+
+# -----------------------------------------------------------------------------
+# Normalisation helper
+# -----------------------------------------------------------------------------
+def apply_normalization(viewer, abs_path, parent, y_data):
+    """Apply I0 normalisation for a given spectrum.
+
+    Historically the codebase called a module-level ``processing.apply_normalization``.
+    In v2.x the actual implementation lives on the main window class as
+    ``HDF5Viewer._apply_normalization`` (defined in plotting.py). Some parts of the
+    code (e.g. multi-curve processing paths) still import and call the module-level
+    function.
+
+    This thin wrapper keeps backwards compatibility by delegating to the instance
+    method if present, otherwise returning the input unchanged.
+    """
+    try:
+        fn = getattr(viewer, "_apply_normalization", None)
+        if callable(fn):
+            return fn(abs_path, parent, y_data)
+    except Exception:
+        pass
+    return y_data
 import os
 import sys
 import time
@@ -14,6 +41,63 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+
+
+def _proc_safe_post_normalize(viewer, x, y, mode):
+    """Module-level wrapper used across the codebase for post-normalization.
+
+    Delegates to ``viewer._safe_post_normalize`` (method on ProcessingMixin),
+    falling back to a minimal safe implementation if that method is unavailable.
+
+    Parameters
+    ----------
+    viewer : object
+        The main HDF5Viewer instance (inherits ProcessingMixin).
+    x, y : array-like
+        Data arrays.
+    mode : str
+        One of: "None", "Max", "Jump", "Area".
+
+    Returns
+    -------
+    np.ndarray
+        Post-normalized y (or unchanged if not applicable).
+    """
+    import numpy as np
+
+    # Preferred path: use the mixin method (keeps behavior consistent everywhere).
+    try:
+        fn = getattr(viewer, "_safe_post_normalize", None)
+        if callable(fn):
+            return fn(x, y, mode)
+    except Exception:
+        pass
+
+    # Fallback: minimal robust implementation.
+    if mode is None or mode == "None":
+        return y
+    x = np.asarray(x)
+    y = np.asarray(y, dtype=float)
+    m = np.isfinite(x) & np.isfinite(y)
+    if not np.any(m):
+        return y
+    xf = x[m]
+    yf = y[m]
+    def _nonzero(v):
+        return np.isfinite(v) and abs(v) > 1e-30
+    try:
+        if mode == "Max":
+            d = float(np.max(np.abs(yf)))
+            return y / d if _nonzero(d) else y
+        if mode == "Jump":
+            d = float(yf[-1])
+            return y / d if _nonzero(d) else y
+        if mode == "Area":
+            a = float(np.trapz(yf, xf))
+            return y / a if _nonzero(a) else y
+    except Exception:
+        return y
+    return y
 
 class ProcessingMixin:
     def _proc_robust_polyfit_on_normalized(self, xs, ys, deg, x_eval):
@@ -362,274 +446,352 @@ class ProcessingMixin:
 
     def on_press(self, event):
         import numpy as np
-        if not getattr(self, "manual_mode", False):
-            return
-        if getattr(event, "button", None) != 1:
-            return
-        if event.inaxes is not getattr(self, "proc_ax", None):
-            return
-        if not getattr(self, "manual_points", None):
-            return
-        # Cache current y-limits to keep scale stable while dragging
+        # Manual BG anchor dragging (only when Manual BG mode is active)
         try:
-            self._drag_ylim = tuple(self.proc_ax.get_ylim())
+            mode = self.combo_bg.currentText()
         except Exception:
-            self._drag_ylim = None
-    
-        xs = np.array([pt["x"] for pt in self.manual_points], dtype=float)
-        ys = np.array([pt["y"] for pt in self.manual_points], dtype=float)
-        if not len(xs) or event.x is None or event.y is None:
-            return
-        trans = self.proc_ax.transData
-        pts_display = trans.transform(np.column_stack([xs, ys]))
-        click = np.array([event.x, event.y], dtype=float)
-        d2 = np.sum((pts_display - click) ** 2, axis=1)
-        i_min = int(np.argmin(d2))
-        if d2[i_min] <= 10.0 ** 2:
-            self._drag_index = i_min
-        else:
-            self._drag_index = None
+            mode = "None"
+        if mode == "Manual" and getattr(self, "manual_mode", False):
+            if getattr(event, "button", None) != 1:
+                return
+            if event.inaxes is not getattr(self, "proc_ax", None):
+                return
+            if not getattr(self, "manual_points", None):
+                return
+            # Cache current y-limits to keep scale stable while dragging
+            try:
+                self._drag_ylim = tuple(self.proc_ax.get_ylim())
+            except Exception:
+                self._drag_ylim = None
 
+            xs = np.array([pt["x"] for pt in self.manual_points], dtype=float)
+            ys = np.array([pt["y"] for pt in self.manual_points], dtype=float)
+            if not len(xs) or event.x is None or event.y is None:
+                return
+            trans = self.proc_ax.transData
+            pts_display = trans.transform(np.column_stack([xs, ys]))
+            click = np.array([event.x, event.y], dtype=float)
+            d2 = np.sum((pts_display - click) ** 2, axis=1)
+            i_min = int(np.argmin(d2))
+            if d2[i_min] <= 10.0 ** 2:
+                self._drag_index = i_min
+            else:
+                self._drag_index = None
+            return
+
+        # Automatic BG pre-edge marker dragging (mirrors the robust, pixel-space hit-test used above)
+        try:
+            if getattr(event, "button", None) != 1:
+                return
+            # NOTE: Unlike manual-anchor dragging we do *not* hard-require
+            # event.inaxes == proc_ax. With recent Matplotlib/Qt (incl. HiDPI),
+            # clicks on a Line2D artist can occasionally arrive with inaxes=None
+            # even though the click is visually inside the axes.
+            if getattr(self, "proc_ax", None) is None:
+                return
+            combo = getattr(self, "combo_bg", None)
+            if combo is None or combo.currentText() != "Automatic":
+                return
+            ln = getattr(self, "proc_preedge_line", None)
+            if ln is None:
+                return
+            if event.x is None:
+                return
+
+            # Get current line x-position
+            try:
+                xline = float(np.asarray(ln.get_xdata(), dtype=float)[0])
+            except Exception:
+                return
+
+            # Compute pixel distance from click to vertical line (use y-mid of current axes limits)
+            # Compare in display (pixel) coordinates.
+            try:
+                y0, y1 = self.proc_ax.get_ylim()
+                ymid_data = 0.5 * (float(y0) + float(y1))
+            except Exception:
+                ymid_data = 0.0
+            try:
+                xpix, _ypix = self.proc_ax.transData.transform((xline, ymid_data))
+            except Exception:
+                return
+
+            # Generous tolerance in pixels for easy grabbing.
+            if abs(float(event.x) - float(xpix)) <= 25.0:
+                self._dragging_preedge = True
+                self._drag_index = None
+        except Exception:
+            return
     def on_motion(self, event):
         import numpy as np
-        if not getattr(self, "manual_mode", False):
-            return
-        i = getattr(self, "_drag_index", None)
-        if i is None:
-            return
-        if event.inaxes is not getattr(self, "proc_ax", None):
-            return
-        if (event.xdata is None or not np.isfinite(event.xdata) or
-                event.ydata is None or not np.isfinite(event.ydata)):
-            return
+        # Manual BG anchor dragging (only when Manual BG mode is active)
         try:
-            x_new = float(event.xdata)
-            y_new = float(event.ydata)
+            mode = self.combo_bg.currentText()
         except Exception:
-            return
-        # Update both X and Y of the active manual background anchor
-        self.manual_points[i]["x"] = x_new
-        self.manual_points[i]["y"] = y_new
-        art = self.manual_points[i].get("artist")
-        if art is not None:
+            mode = "None"
+        if mode == "Manual" and getattr(self, "manual_mode", False):
+            i = getattr(self, "_drag_index", None)
+            if i is None:
+                return
+            if event.inaxes is not getattr(self, "proc_ax", None):
+                return
+            if (event.xdata is None or not np.isfinite(event.xdata) or
+                    event.ydata is None or not np.isfinite(event.ydata)):
+                return
             try:
-                art.set_data([x_new], [y_new])
+                x_new = float(event.xdata)
+                y_new = float(event.ydata)
             except Exception:
-                pass
-        xs = np.array([pt["x"] for pt in self.manual_points], dtype=float)
-        ys = np.array([pt["y"] for pt in self.manual_points], dtype=float)
-        try:
-            deg = int(self.combo_poly.currentText())
-        except Exception:
-            deg = 2
-        x_grid = None
-        if getattr(self, "manual_bg_line", None) is not None:
+                return
+            # Update both X and Y of the active manual background anchor
+            self.manual_points[i]["x"] = x_new
+            self.manual_points[i]["y"] = y_new
+            art = self.manual_points[i].get("artist")
+            if art is not None:
+                try:
+                    art.set_data([x_new], [y_new])
+                except Exception:
+                    pass
+            xs = np.array([pt["x"] for pt in self.manual_points], dtype=float)
+            ys = np.array([pt["y"] for pt in self.manual_points], dtype=float)
             try:
-                x_grid = np.asarray(self.manual_bg_line.get_xdata(), dtype=float)
+                deg = int(self.combo_poly.currentText())
             except Exception:
-                x_grid = None
-        if x_grid is None or x_grid.size == 0:
-            lines = [ln for ln in self.proc_ax.get_lines() if ln is not getattr(self, "manual_bg_line", None)]
-            for ln in lines:
-                xd = ln.get_xdata()
-                if xd is not None and len(xd):
-                    x_grid = np.asarray(xd, dtype=float)
-                    break
-        if x_grid is None or x_grid.size == 0:
-            x_min = np.nanmin(xs) if np.isfinite(xs).any() else 0.0
-            x_max = np.nanmax(xs) if np.isfinite(xs).any() else 1.0
-            if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
-                x_min, x_max = 0.0, 1.0
-            x_grid = np.linspace(x_min, x_max, 512)
-        try:
-            bg, coeffs = _proc_robust_polyfit_on_normalized(self, xs, ys, deg, x_grid)
-            self.manual_poly = coeffs
-        except Exception:
-            try: self.proc_ax.figure.canvas.draw_idle()
-            except Exception: pass
-            return
-        if bg.size and ys.size and np.isfinite(ys[0]):
-            bg[0] = ys[0]
-        m = np.isfinite(x_grid) & np.isfinite(bg)
-        x_plot = x_grid[m] if np.any(m) else np.array([], dtype=float)
-        y_plot = bg[m]      if np.any(m) else np.array([], dtype=float)
-        if getattr(self, "manual_bg_line", None) is None:
-            if x_plot.size and y_plot.size:
+                deg = 2
+            x_grid = None
+            if getattr(self, "manual_bg_line", None) is not None:
                 try:
-                    (self.manual_bg_line,) = self.proc_ax.plot(x_plot, y_plot, "--", color="red", label="Background")
+                    x_grid = np.asarray(self.manual_bg_line.get_xdata(), dtype=float)
                 except Exception:
-                    self.manual_bg_line = None
-        else:
-            if x_plot.size and y_plot.size:
-                try:
-                    self.manual_bg_line.set_data(x_plot, y_plot)
-                except Exception:
-                    try: self.manual_bg_line.remove()
-                    except Exception: pass
-                    self.manual_bg_line = None
+                    x_grid = None
+            if x_grid is None or x_grid.size == 0:
+                lines = [ln for ln in self.proc_ax.get_lines() if ln is not getattr(self, "manual_bg_line", None)]
+                for ln in lines:
+                    xd = ln.get_xdata()
+                    if xd is not None and len(xd):
+                        x_grid = np.asarray(xd, dtype=float)
+                        break
+            if x_grid is None or x_grid.size == 0:
+                x_min = np.nanmin(xs) if np.isfinite(xs).any() else 0.0
+                x_max = np.nanmax(xs) if np.isfinite(xs).any() else 1.0
+                if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
+                    x_min, x_max = 0.0, 1.0
+                x_grid = np.linspace(x_min, x_max, 512)
+            try:
+                bg, coeffs = _proc_robust_polyfit_on_normalized(self, xs, ys, deg, x_grid)
+                self.manual_poly = coeffs
+            except Exception:
+                try: self.proc_ax.figure.canvas.draw_idle()
+                except Exception: pass
+                return
+            if bg.size and ys.size and np.isfinite(ys[0]):
+                bg[0] = ys[0]
+            m = np.isfinite(x_grid) & np.isfinite(bg)
+            x_plot = x_grid[m] if np.any(m) else np.array([], dtype=float)
+            y_plot = bg[m]      if np.any(m) else np.array([], dtype=float)
+            if getattr(self, "manual_bg_line", None) is None:
+                if x_plot.size and y_plot.size:
                     try:
                         (self.manual_bg_line,) = self.proc_ax.plot(x_plot, y_plot, "--", color="red", label="Background")
                     except Exception:
                         self.manual_bg_line = None
-        ys_fin = ys[np.isfinite(ys)]
-        y_candidates = []
-        if y_plot.size: y_candidates.append(y_plot)
-        if ys_fin.size: y_candidates.append(ys_fin)
-        if y_candidates:
-            all_y = np.concatenate(y_candidates)
-            if all_y.size:
-                y_min = float(np.nanmin(all_y)); y_max = float(np.nanmax(all_y))
-                if np.isfinite(y_min) and np.isfinite(y_max):
-                    # Compute a padded target box from current content
-                    if y_max <= y_min:
-                        pad_content = max(1e-6, abs(y_max) * 0.05 + 1e-6)
-                    else:
-                        pad_content = 0.05 * (y_max - y_min)
-                    target_low  = y_min - pad_content
-                    target_high = y_max + pad_content
-    
-                    # During drag, only EXPAND y-limits (no sudden zoom-in)
-                    curr_low, curr_high = None, None
-                    if hasattr(self, "_drag_ylim") and isinstance(self._drag_ylim, tuple):
-                        curr_low, curr_high = self._drag_ylim
-                    else:
+            else:
+                if x_plot.size and y_plot.size:
+                    try:
+                        self.manual_bg_line.set_data(x_plot, y_plot)
+                    except Exception:
+                        try: self.manual_bg_line.remove()
+                        except Exception: pass
+                        self.manual_bg_line = None
                         try:
-                            curr_low, curr_high = self.proc_ax.get_ylim()
+                            (self.manual_bg_line,) = self.proc_ax.plot(x_plot, y_plot, "--", color="red", label="Background")
                         except Exception:
-                            pass
-    
-                    if curr_low is not None and curr_high is not None:
-                        new_low  = min(curr_low, target_low)
-                        new_high = max(curr_high, target_high)
-                    else:
-                        new_low, new_high = target_low, target_high
-    
-                    # Set limits; guard against identical bounds
-                    if np.isfinite(new_low) and np.isfinite(new_high):
-                        if new_high <= new_low:
-                            new_high = new_low + 1.0
-                        try:
-                            self.proc_ax.set_ylim(new_low, new_high)
-                        except Exception:
-                            pass
+                            self.manual_bg_line = None
+            ys_fin = ys[np.isfinite(ys)]
+            y_candidates = []
+            if y_plot.size: y_candidates.append(y_plot)
+            if ys_fin.size: y_candidates.append(ys_fin)
+            if y_candidates:
+                all_y = np.concatenate(y_candidates)
+                if all_y.size:
+                    y_min = float(np.nanmin(all_y)); y_max = float(np.nanmax(all_y))
+                    if np.isfinite(y_min) and np.isfinite(y_max):
+                        # Compute a padded target box from current content
+                        if y_max <= y_min:
+                            pad_content = max(1e-6, abs(y_max) * 0.05 + 1e-6)
+                        else:
+                            pad_content = 0.05 * (y_max - y_min)
+                        target_low  = y_min - pad_content
+                        target_high = y_max + pad_content
         
-        try: self.proc_ax.figure.canvas.draw_idle()
-        except Exception: pass
+                        # During drag, only EXPAND y-limits (no sudden zoom-in)
+                        curr_low, curr_high = None, None
+                        if hasattr(self, "_drag_ylim") and isinstance(self._drag_ylim, tuple):
+                            curr_low, curr_high = self._drag_ylim
+                        else:
+                            try:
+                                curr_low, curr_high = self.proc_ax.get_ylim()
+                            except Exception:
+                                pass
+        
+                        if curr_low is not None and curr_high is not None:
+                            new_low  = min(curr_low, target_low)
+                            new_high = max(curr_high, target_high)
+                        else:
+                            new_low, new_high = target_low, target_high
+        
+                        # Set limits; guard against identical bounds
+                        if np.isfinite(new_low) and np.isfinite(new_high):
+                            if new_high <= new_low:
+                                new_high = new_low + 1.0
+                            try:
+                                self.proc_ax.set_ylim(new_low, new_high)
+                            except Exception:
+                                pass
+            
+            try: self.proc_ax.figure.canvas.draw_idle()
+            except Exception: pass
+            return
 
-    def on_release(self, event):
-        if not getattr(self, "manual_mode", False):
+        # Automatic BG pre-edge marker dragging
+        if not getattr(self, "_dragging_preedge", False):
             return
-        if getattr(event, "button", None) != 1:
+        if event is None:
             return
-        self._drag_index = None
-        # Restore autoscale after drag ends (smoothly)
+        if getattr(self, "proc_ax", None) is None:
+            return
+        if event.x is None:
+            return
+
+        # Determine xdata robustly.
+        # Prefer event.xdata, but fall back to pixel->data conversion using the
+        # vertical center of the axes (does not depend on event.y/inaxes).
+        xdata = getattr(event, "xdata", None)
+        if xdata is None or (not np.isfinite(xdata)):
+            try:
+                bbox = self.proc_ax.bbox
+                ypix_mid = 0.5 * (float(bbox.y0) + float(bbox.y1))
+                xdata = float(self.proc_ax.transData.inverted().transform((float(event.x), ypix_mid))[0])
+            except Exception:
+                return
         try:
-            self.proc_ax.relim()
-            self.proc_ax.autoscale_view()
-            self.proc_ax.figure.canvas.draw_idle()
+            xdata = float(xdata)
+        except Exception:
+            return
+
+        x = getattr(self, "_proc_last_x", None)
+        if x is None:
+            return
+        try:
+            x = np.asarray(x, dtype=float)
+        except Exception:
+            return
+        if x.size < 2:
+            return
+
+        # Map x-position to nearest data index, then to the integer pre-edge percentage.
+        # IMPORTANT: spin_preedge is a QSpinBox (integer). If we move the line continuously
+        # but only update the spinbox in 1% steps, the line will "jump back" on redraw.
+        # Therefore we SNAP the marker to the same 1% grid during dragging.
+        try:
+            idx_hit = int(np.argmin(np.abs(x - xdata)))
+        except Exception:
+            return
+        idx_hit = max(1, min(idx_hit, int(x.size - 1)))
+        denom = float(max(1, int(x.size - 1)))
+        pre_percent_int = int(round(100.0 * float(idx_hit) / denom))
+        pre_percent_int = max(1, min(pre_percent_int, 99))
+        idx = int(round((float(pre_percent_int) / 100.0) * denom))
+        idx = max(1, min(idx, int(x.size - 1)))
+        self._preedge_drag_percent_int = pre_percent_int
+
+        # Update UI value without recursive signal storms
+        spin = getattr(self, "spin_preedge", None)
+        if spin is not None:
+            try:
+                spin.blockSignals(True)
+                spin.setValue(int(pre_percent_int))
+                spin.blockSignals(False)
+            except Exception:
+                try:
+                    spin.blockSignals(False)
+                except Exception:
+                    pass
+
+        # Update line position immediately (plot update will also redraw it)
+        try:
+            ln = getattr(self, "proc_preedge_line", None)
+            if ln is not None:
+                x0 = float(x[idx])
+                ln.set_xdata([x0, x0])
         except Exception:
             pass
-        # clear cached limits
-        self._drag_ylim = None
-
-
-
-def apply_normalization(viewer, abs_path: str, parent: str, y_data):
-    """Normalize y_data by the selected I0 channel when viewer.chk_normalize is checked.
-    Falls back to y_data on any error or if norm channel not found."""
-    try:
-        if not getattr(viewer, "chk_normalize", None) or not viewer.chk_normalize.isChecked():
-            return y_data
-        norm_channel = viewer.combo_norm.currentText()
-        norm_path = f"{parent}/{norm_channel}" if parent else norm_channel
-        with viewer._open_h5_read(abs_path) as f:
-            if norm_path in f:
-                norm = f[norm_path][()]
-                return np.divide(y_data, norm, out=np.zeros_like(y_data, dtype=float), where=norm != 0)
-    except Exception:
-        pass
-    return y_data
-
-
-def _proc_safe_post_normalize(viewer, x, y, mode: str):
-    """Apply an optional post-normalization to array y based on mode.
-    Supported (case-insensitive): 'none', 'max', 'max=1', 'jump', 'jump=1', 'area', 'area=1'.
-    Returns y unchanged on errors."""
-    try:
-        if not isinstance(mode, str):
-            return y
-        m = mode.strip().lower()
-        yy = np.asarray(y, dtype=float)
-        if yy.size == 0:
-            return y
-
-        # Build finite masks
-        xf = np.asarray(x, dtype=float) if x is not None else None
-        if xf is not None and xf.size:
-            n = min(xf.size, yy.size)
-            xf = xf[:n]; yy = yy[:n]
-        fmask = np.isfinite(yy)
-        if xf is not None and xf.size:
-            fmask = fmask & np.isfinite(xf)
-        yf = yy[fmask]
-        xf = xf[fmask] if xf is not None and xf.size else None
-
-        def _nonzero(val, eps=1e-15):
-            return (val is not None) and np.isfinite(val) and (abs(val) > eps)
-
-        if m in ("max", "max=1"):
-            d = float(np.max(np.abs(yf))) if yf.size else None
-            if _nonzero(d):
-                return yy / d
-            return y
-
-        if m in ("jump", "jump=1"):
-            d = float(yf[-1]) if yf.size else None  # divide by last finite y
-            if _nonzero(d):
-                return yy / d
-            return y
-
-        if m in ("area", "area=1"):
-            if xf is None or xf.size < 2 or yf.size < 2:
-                return y
-            area = float(np.trapz(yf, xf))
-            if _nonzero(area):
-                return yy / area
-            return y
-
-        return y  # 'none' or unknown
-    except Exception:
-        return y
-
-
-
-def apply_manual_bg(viewer, x, y):
-    """Minimal manual background plot/update using viewer.manual_bg_points.
-    If points exist, fit a polynomial of degree from combo_poly (or viewer.manual_poly_degree)
-    and draw/update a dashed line on viewer.proc_ax."""
-    try:
-        pts = getattr(viewer, "manual_bg_points", None) or []
-        if len(pts) < 2:
-            # Nothing to draw; ensure any old line remains as-is
-            return
-        xpts = np.array([p[0] for p in pts], dtype=float)
-        ypts = np.array([p[1] for p in pts], dtype=float)
+        # During dragging we only move the marker line and update the pre-edge % widget.
+        # Recomputing the full processed plot on every mouse-move can recreate artists and
+        # interrupt dragging (especially on recent Matplotlib/Qt backends). We therefore
+        # recompute once on mouse-release.
         try:
-            deg = int(viewer.combo_poly.currentText())
+            self.canvas_proc.draw_idle()
         except Exception:
-            deg = int(getattr(viewer, "manual_poly_degree", 2))
-        deg = max(0, min(deg, max(0, len(xpts) - 1)))
-        coeffs = np.polyfit(xpts, ypts, deg)
-        bg = np.polyval(coeffs, np.asarray(x, dtype=float))
-        if getattr(viewer, "manual_bg_line", None) is None:
-            (viewer.manual_bg_line,) = viewer.proc_ax.plot(x, bg, linestyle="--", linewidth=1.5, label="_manual_bg")
-        else:
-            viewer.manual_bg_line.set_data(x, bg)
-        viewer.proc_ax.figure.canvas.draw_idle()
-    except Exception:
-        pass
+            pass
+    def on_release(self, event):
+        # Finish automatic BG pre-edge marker drag
+        if getattr(self, "_dragging_preedge", False):
+            if getattr(event, "button", None) == 1:
+                self._dragging_preedge = False
+                # Ensure the spinbox reflects the final dragged value (QSpinBox => int)
+                spin = getattr(self, "spin_preedge", None)
+                if spin is not None:
+                    try:
+                        v = getattr(self, "_preedge_drag_percent_int", None)
+                        if v is not None:
+                            spin.blockSignals(True)
+                            spin.setValue(int(v))
+                            spin.blockSignals(False)
+                        else:
+                            spin.blockSignals(False)
+                    except Exception:
+                        pass
+                # Recompute processed plot once at the end of dragging
+                try:
+                    if hasattr(self, "update_plot_processed"):
+                        self.update_plot_processed()
+                except Exception:
+                    pass
+                try:
+                    self.canvas_proc.draw_idle()
+                except Exception:
+                    pass
+            return
 
+        # Manual BG anchor drag end (only when Manual BG mode is active)
+        try:
+            mode = self.combo_bg.currentText()
+        except Exception:
+            mode = "None"
+        if mode == "Manual" and getattr(self, "manual_mode", False):
+            if getattr(event, "button", None) != 1:
+                return
+            self._drag_index = None
+            # Restore autoscale after drag ends (smoothly)
+            try:
+                self.proc_ax.relim()
+                self.proc_ax.autoscale_view()
+                self.proc_ax.figure.canvas.draw_idle()
+            except Exception:
+                pass
+            # clear cached limits
+            self._drag_ylim = None
+    
+            return
 
-def _proc_robust_polyfit_on_normalized(self, xs, ys, deg, x_eval):
-    # free-function alias calling the mixin method (keeps old call sites working)
-    return ProcessingMixin._proc_robust_polyfit_on_normalized(self, xs, ys, deg, x_eval)
+        # Pre-edge marker drag end
+        try:
+            if getattr(event, "button", None) != 1:
+                return
+        except Exception:
+            pass
+        try:
+            self._dragging_preedge = False
+        except Exception:
+            pass

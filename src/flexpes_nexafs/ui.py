@@ -41,7 +41,7 @@ def _proc_safe_post_normalize(self, x, y, mode):
     return self._safe_post_normalize(x, y, mode)
 # ----------------------------------------
 from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from datetime import datetime
@@ -88,17 +88,24 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 self.update_legend()
         except Exception:
             pass
-    def _on_plotted_legend_checkbox_toggled(self, state):
-        """Qt slot: show/hide legend on Plotted Data panel."""
+    def _on_plotted_legend_mode_changed(self, _idx=0):
+        """Qt slot: change legend behavior on Plotted Data panel."""
         try:
-            show = bool(state)
+            mode = str(getattr(self, "legend_mode_combo").currentText())
         except Exception:
-            show = bool(state)
+            mode = "User-defined"
         try:
-            if hasattr(self, "toggle_plotted_legend"):
-                self.toggle_plotted_legend(show)
+            if hasattr(self, "set_plotted_legend_mode"):
+                self.set_plotted_legend_mode(mode)
         except Exception:
-            pass
+            # Fallback: at least hide/show legend
+            try:
+                if mode.strip().lower() == "none":
+                    self.toggle_plotted_legend(False)
+                else:
+                    self.toggle_plotted_legend(True)
+            except Exception:
+                pass
 
     def _on_plotted_annotation_checkbox_toggled(self, state):
         """Qt slot: show/hide annotation box on Plotted Data panel."""
@@ -114,10 +121,10 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FlexPES NEXAFS Plotter")
-        self.setGeometry(100, 100, 1250, 600)
+        self.setGeometry(100, 100, 1500, 600)
 
-        self.VERSION_NUMBER = "2.0.0"
-        self.CREATION_DATETIME = "2025-12-04"
+        self.VERSION_NUMBER = "2.1.0"
+        self.CREATION_DATETIME = "2025-12-24"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
@@ -195,9 +202,14 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.left_panel.addWidget(self.file_label)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["HDF5 Structure", "Plot"])
+        self.tree.setColumnCount(1)
+        try:
+            from PyQt5.QtWidgets import QHeaderView
+            self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        except Exception:
+            pass
+        self.tree.setHeaderLabels(["HDF5 Structure"])
         self.tree.header().resizeSection(0, 250)
-        self.tree.header().resizeSection(1, 30)
         self.tree.itemExpanded.connect(self.load_subtree)
         self.tree.itemChanged.connect(self.toggle_plot)
         self.tree.itemClicked.connect(self.display_data)
@@ -281,8 +293,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.raw_tree.setHeaderHidden(True)
         (self.raw_tree.itemChanged.connect( self.raw_tree_item_changed )) if hasattr(self, 'raw_tree_item_changed') else None
         self.raw_splitter.addWidget(self.raw_tree)
-        self.raw_splitter.setStretchFactor(0, 65)
-        self.raw_splitter.setStretchFactor(1, 35)
+        self.raw_splitter.setStretchFactor(0, 40)
+        self.raw_splitter.setStretchFactor(1, 60)
         self.data_tabs.addTab(self.raw_tab, "Raw Data")
 
         #######################################################################
@@ -306,13 +318,36 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.proc_controls_top_layout.addWidget(self.combo_norm)
         self.combo_norm.setEnabled(False)
 
-        self.chk_sum = QCheckBox("Sum them up?")
+        self.chk_sum = QCheckBox("Sum up?")
         self.proc_controls_top_layout.addWidget(self.chk_sum)
+
+        # Group background (Automatic BG + multiple selection)
+        self.chk_group_bg = QCheckBox("Group BG")
+        self.chk_group_bg.setChecked(False)
+        self.chk_group_bg.setEnabled(False)
+        self.chk_group_bg.setToolTip(
+            "When two or more spectra are selected and BG mode is 'Automatic', "
+            "enables group processing. With Area post-normalization, backgrounds are adjusted "
+            "so that the pre-edge baseline is at zero and the absorption jump after Area normalization "
+            "is consistent across the selected group."
+        )
+        self.proc_controls_top_layout.addWidget(self.chk_group_bg)
+
+        # Optional: match pre-edge slope across the group (only meaningful in group Auto BG)
+        self.chk_group_bg_slope = QCheckBox("Match pre-edge slope")
+        self.chk_group_bg_slope.setChecked(False)
+        self.chk_group_bg_slope.setEnabled(False)
+        self.chk_group_bg_slope.setToolTip(
+            "When Group BG is active (Automatic BG + multiple selected spectra), "
+            "adjusts the backgrounds so that the pre-edge slope after BG subtraction "
+            "is consistent across the selected group."
+        )
+        self.proc_controls_top_layout.addWidget(self.chk_group_bg_slope)
         self.proc_controls_top_layout.addStretch()
 
         self.pass_button = QPushButton("Pass")
         self.proc_controls_top_layout.addWidget(self.pass_button)
-        self.export_ascii_button = QPushButton("Export ASCII")
+        self.export_ascii_button = QPushButton("Export")
         self.proc_controls_top_layout.addWidget(self.export_ascii_button)
         self.export_ascii_button.clicked.connect(self.export_ascii)
         self.pass_button.clicked.connect(self.pass_to_plotted_no_clear)
@@ -326,6 +361,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.canvas_proc_fig, self.proc_ax = plt.subplots()
         self.canvas_proc = FigureCanvas(self.canvas_proc_fig)
         self.toolbar_proc = NavigationToolbar(self.canvas_proc, self.proc_left_widget)
+        # Pre-edge marker dragging is handled via ProcessingMixin.on_press/on_motion/on_release
+        # (same event pipeline as Manual BG anchors) for maximum robustness.
         self.proc_left_layout.addWidget(self.toolbar_proc)
         self.proc_left_layout.addWidget(self.canvas_proc, 1)
 
@@ -336,7 +373,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.proc_controls_bottom_layout.setContentsMargins(0, 0, 0, 0)
         self.proc_controls_bottom_layout.setSpacing(5)
 
-        self.proc_controls_bottom_layout.addWidget(QLabel("Choose background:"))
+        self.proc_controls_bottom_layout.addWidget(QLabel("Choose BG:"))
         self.combo_bg = QComboBox()
         self.combo_bg.addItems(["None", "Automatic", "Manual"])
         self.proc_controls_bottom_layout.addWidget(self.combo_bg)
@@ -353,7 +390,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.spin_preedge.setValue(12)
         self.proc_controls_bottom_layout.addWidget(self.spin_preedge)
 
-        self.chk_show_without_bg = QCheckBox("Subtract background?")
+        self.chk_show_without_bg = QCheckBox("Subtract BG?")
         self.proc_controls_bottom_layout.addWidget(QLabel("Normalize:"))
         self.combo_post_norm = QComboBox()
         self.combo_post_norm.addItems(["None", "Max", "Jump", "Area"])
@@ -371,8 +408,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.proc_splitter = QSplitter(Qt.Horizontal)
         self.proc_splitter.addWidget(self.proc_left_widget)
         self.proc_splitter.addWidget(self.proc_tree)
-        self.proc_splitter.setStretchFactor(0, 57)
-        self.proc_splitter.setStretchFactor(1, 43)
+        self.proc_splitter.setStretchFactor(0, 35)
+        self.proc_splitter.setStretchFactor(1, 65)
 
         self.proc_tab_layout = QVBoxLayout(self.proc_tab)
         self.proc_tab_layout.addWidget(self.proc_splitter)
@@ -400,9 +437,15 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.plotted_controls_top_layout.setContentsMargins(0, 0, 0, 0)
         self.plotted_controls_top_layout.setSpacing(5)
 
-        self.chk_show_legend = QCheckBox("Legend")
-        self.chk_show_legend.setChecked(True)
-        self.plotted_controls_top_layout.addWidget(self.chk_show_legend)
+        self.plotted_controls_top_layout.addWidget(QLabel("Legend:"))
+        self.legend_mode_combo = QComboBox()
+        self.legend_mode_combo.addItems(["None", "User-defined", "Entry number"])
+        self.legend_mode_combo.setCurrentText("User-defined")
+        self.legend_mode_combo.setToolTip(
+            "Legend labeling mode. 'User-defined' lets you click legend entries to rename. "
+            "'Entry number' labels curves by entryXXXX -> XXXX. 'None' hides the legend."
+        )
+        self.plotted_controls_top_layout.addWidget(self.legend_mode_combo)
 
         self.chk_show_annotation = QCheckBox("Annotation")
         self.chk_show_annotation.setChecked(False)
@@ -410,7 +453,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
 
         self.plotted_controls_top_layout.addStretch()
 
-        self.chk_show_legend.stateChanged.connect(self._on_plotted_legend_checkbox_toggled)
+        self.legend_mode_combo.currentIndexChanged.connect(self._on_plotted_legend_mode_changed)
         self.chk_show_annotation.stateChanged.connect(self._on_plotted_annotation_checkbox_toggled)
 
         self.plot_left_layout.addWidget(self.plotted_controls_top, 0)
@@ -451,8 +494,13 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.plot_buttons_layout.addWidget(self.grid_label)
         self.grid_mode_combo = QComboBox()
         self.grid_mode_combo.addItems(["None", "Coarse", "Fine", "Finest"])
-        self.grid_mode_combo.setCurrentText("None")
         self.grid_mode_combo.currentIndexChanged.connect(self.on_grid_toggled)
+        self.grid_mode_combo.setCurrentText("Finest")
+        # Apply default grid setting
+        try:
+            self.on_grid_toggled()
+        except Exception:
+            pass
         self.plot_buttons_layout.addWidget(self.grid_mode_combo)
         # Button to load reference spectra from library
         self.load_reference_button = QPushButton("Load reference")
@@ -466,9 +514,22 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         # Stretch pushes the Export/ Clear buttons to the right
         self.plot_buttons_layout.addStretch()
 
-        self.export_ascii_plotted_button = QPushButton("Export ASCII")
-        self.export_ascii_plotted_button.clicked.connect(self.export_ascii_plotted)
-        self.plot_buttons_layout.addWidget(self.export_ascii_plotted_button)
+        self.export_import_plotted_button = QPushButton("Export/Import")
+        self.plot_buttons_layout.addWidget(self.export_import_plotted_button)
+
+        # Export/Import popup menu for Plotted Data
+        self.export_import_plotted_menu = QMenu(self)
+        self.action_export_csv_plotted = self.export_import_plotted_menu.addAction("Export CSV")
+        self.action_import_csv_plotted = self.export_import_plotted_menu.addAction("Import CSV")
+        self.action_export_csv_plotted.triggered.connect(self.export_ascii_plotted)
+        self.action_import_csv_plotted.triggered.connect(self.import_csv_plotted)
+        self.export_import_plotted_button.clicked.connect(
+            lambda: self.export_import_plotted_menu.exec_(
+                self.export_import_plotted_button.mapToGlobal(
+                    QPoint(0, self.export_import_plotted_button.height())
+                )
+            )
+        )
 
         self.clear_plotted_data_button = QPushButton("Clear Plotted Data")
         self.clear_plotted_data_button.clicked.connect(self.clear_plotted_data)
@@ -494,8 +555,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             self.plotted_list.model().rowsMoved.connect(lambda *args: self.on_plotted_list_reordered())
         except Exception:
             pass
-        self.plotted_splitter.setStretchFactor(0, 64)
-        self.plotted_splitter.setStretchFactor(1, 36)
+        self.plotted_splitter.setStretchFactor(0, 65)
+        self.plotted_splitter.setStretchFactor(1, 35)
         self.data_tabs.addTab(self.plotted_splitter, "Plotted Data")
 
         #######################################################################
@@ -509,6 +570,20 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.combo_bg.currentIndexChanged.connect(self.update_plot_processed)
         self.combo_poly.currentIndexChanged.connect(self.update_plot_processed)
         self.spin_preedge.valueChanged.connect(self.update_plot_processed)
+        try:
+            self.chk_group_bg.stateChanged.connect(self._on_group_bg_checkbox_toggled)
+        except Exception:
+            try:
+                self.chk_group_bg.stateChanged.connect(self.update_plot_processed)
+            except Exception:
+                pass
+        try:
+            self.chk_group_bg_slope.stateChanged.connect(self._on_group_bg_slope_checkbox_toggled)
+        except Exception:
+            try:
+                self.chk_group_bg_slope.stateChanged.connect(self.update_plot_processed)
+            except Exception:
+                pass
         self.chk_show_without_bg.stateChanged.connect(self._on_bg_subtract_toggled)
         self.combo_post_norm.currentIndexChanged.connect(self.update_plot_processed)
 
@@ -518,7 +593,52 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.update_file_label()
         self.update_pass_button_state()
         self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setStretchFactor(1, 3)
+
+    def showEvent(self, event):
+        """Set initial splitter proportions once the window is shown."""
+        try:
+            super().showEvent(event)
+        except Exception:
+            pass
+        try:
+            if not getattr(self, "_initial_splitters_set", False):
+                self._initial_splitters_set = True
+                QTimer.singleShot(0, self._apply_initial_splitter_sizes)
+        except Exception:
+            pass
+
+    def _apply_initial_splitter_sizes(self):
+        """Apply initial splitter sizes for a more balanced default layout."""
+        try:
+            # Main splitter: make left tree panel ~20% narrower than the old 1:2 default (~33% -> ~26%)
+            total = int(self.splitter.width())
+            if total > 0:
+                left = max(180, int(total * 0.264))
+                self.splitter.setSizes([left, max(200, total - left)])
+        except Exception:
+            pass
+
+        # Tab splitters: widen the right-hand curve-tree widget vs previous defaults
+        specs = [
+            ("raw_splitter", 0.60),     # wider curve tree on Raw tab
+            ("proc_splitter", 0.68),    # wider curve tree on Processed tab
+            ("plotted_splitter", 0.35)  # narrower list; wider plot on Plotted tab
+        ]
+        for name, right_frac in specs:
+            try:
+                sp = getattr(self, name, None)
+                if sp is None:
+                    continue
+                total = int(sp.width())
+                if total <= 0:
+                    continue
+                right = max(220, int(total * float(right_frac)))
+                left = max(220, total - right)
+                sp.setSizes([left, right])
+            except Exception:
+                continue
+
 
 
     def _refresh_all_in_channel_combo(self):

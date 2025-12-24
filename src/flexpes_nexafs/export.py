@@ -32,7 +32,7 @@ class ExportMixin:
         if not visible_keys:
             visible_keys = [key for key, line in self.plotted_lines.items() if line.get_visible()]
         if not visible_keys:
-            QMessageBox.warning(self, "Export ASCII", "No visible curves to export.")
+            QMessageBox.warning(self, "Export", "No visible curves to export.")
             return
         first_line = self.plotted_lines[visible_keys[0]]
         x_data = first_line.get_xdata()
@@ -48,7 +48,7 @@ class ExportMixin:
         x_data = x_data[:min_len]
         y_arrays = [np.array(y)[:min_len] for y in y_columns]
         header = ["X"] + curve_names
-        file_path, _ = QFileDialog.getSaveFileName(self, "Export ASCII", "", "CSV Files (*.csv)")
+        file_path, _ = QFileDialog.getSaveFileName(self, "Export", "", "CSV Files (*.csv)")
         if file_path:
             try:
                 with open(file_path, "w", newline="") as f:
@@ -59,6 +59,202 @@ class ExportMixin:
                         writer.writerow(row)
             except Exception as ex:
                 print("Error writing CSV:", ex)
+
+
+    def import_csv_plotted(self):
+        """
+        Import one or more CSV files (previously exported) and plot them directly
+        in the *Plotted Data* panel.
+
+        Expected format:
+          - First row: header, with first column being X and remaining columns being Y-series labels.
+          - Data rows: numeric values, comma-separated (other common delimiters are also accepted).
+        """
+        # Choose a reasonable default directory (the directory of any opened HDF5 file, if available)
+        any_file = None
+        try:
+            any_file = next(iter(getattr(self, "hdf5_files", []) or []), None)
+        except Exception:
+            any_file = None
+        default_dir = os.path.dirname(any_file) if any_file else ""
+
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Import CSV",
+            default_dir,
+            "CSV Files (*.csv);;All Files (*)",
+        )
+        if not file_paths:
+            return
+
+        def _is_float(s):
+            try:
+                float(s)
+                return True
+            except Exception:
+                return False
+
+        imported_count = 0
+        errors = []
+
+        for fp in file_paths:
+            try:
+                # --- Read CSV (robust delimiter detection + optional header) ---
+                with open(fp, "r", newline="") as f:
+                    sample = f.read(4096)
+                    f.seek(0)
+                    try:
+                        dialect = csv.Sniffer().sniff(sample, delimiters=",;	")
+                    except Exception:
+                        dialect = csv.excel  # comma by default
+
+                    reader = csv.reader(f, dialect)
+                    rows = []
+                    for row in reader:
+                        if not row:
+                            continue
+                        # allow comments
+                        if str(row[0]).strip().startswith("#"):
+                            continue
+                        rows.append([str(c).strip() for c in row])
+
+                if not rows:
+                    raise ValueError("empty file")
+
+                first = rows[0]
+                has_header = not all(_is_float(c) for c in first if c != "")
+                if has_header:
+                    header = first
+                    data_rows = rows[1:]
+                else:
+                    header = ["X"] + [f"Y{i}" for i in range(1, max(len(first), 2))]
+                    data_rows = rows
+
+                if len(header) < 2:
+                    raise ValueError("CSV must have at least two columns (X and one Y)")
+
+                ncols = len(header)
+
+                x_vals = []
+                y_vals = [[] for _ in range(ncols - 1)]
+
+                for row in data_rows:
+                    if not row:
+                        continue
+                    if len(row) < 2:
+                        continue
+                    # pad short rows
+                    if len(row) < ncols:
+                        row = row + [""] * (ncols - len(row))
+                    # parse x
+                    try:
+                        x = float(row[0])
+                    except Exception:
+                        continue
+                    x_vals.append(x)
+                    # parse y's
+                    for j in range(1, ncols):
+                        try:
+                            y = float(row[j])
+                        except Exception:
+                            y = float("nan")
+                        y_vals[j - 1].append(y)
+
+                x_arr = np.asarray(x_vals, dtype=float)
+                if x_arr.size < 2:
+                    raise ValueError("not enough numeric rows to import")
+
+                file_stem = os.path.splitext(os.path.basename(fp))[0]
+
+                # Add each Y column as a separate curve
+                for j, y_list in enumerate(y_vals):
+                    y_arr = np.asarray(y_list, dtype=float)
+                    if y_arr.size != x_arr.size:
+                        n = min(x_arr.size, y_arr.size)
+                        x_use = x_arr[:n]
+                        y_use = y_arr[:n]
+                    else:
+                        x_use = x_arr
+                        y_use = y_arr
+
+                    mask = np.isfinite(x_use) & np.isfinite(y_use)
+                    x_use = x_use[mask]
+                    y_use = y_use[mask]
+                    if x_use.size < 2:
+                        continue
+
+                    col_name = ""
+                    try:
+                        col_name = str(header[j + 1]).strip()
+                    except Exception:
+                        col_name = f"Y{j+1}"
+                    if not col_name:
+                        col_name = f"Y{j+1}"
+
+                    # Labeling logic:
+                    # - if file contains multiple Y columns, prefix with file name
+                    # - otherwise, just use file name unless the column header is informative
+                    if ncols > 2:
+                        label = f"{file_stem}: {col_name}"
+                    else:
+                        # single Y column
+                        if has_header and col_name.lower() not in ("y", "y1", "intensity", "intensity1", "value"):
+                            label = f"{file_stem}: {col_name}"
+                        else:
+                            label = file_stem
+
+                    # unique internal key
+                    ts = int(time.time() * 1000)
+                    storage_key = f"csv##{file_stem}##{col_name}##{ts}##{j}"
+
+                    meta = {
+                        "is_reference": False,
+                        "is_imported": True,
+                        "source": "csv",
+                        "file": fp,
+                        "column": col_name,
+                    }
+
+                    if hasattr(self, "_add_reference_curve_to_plotted"):
+                        self._add_reference_curve_to_plotted(storage_key, x_use, y_use, label, meta=meta)
+                    else:
+                        # Very old fallback: plot directly if helper is unavailable
+                        try:
+                            line, = self.plotted_ax.plot(x_use, y_use, label=str(label))
+                            if not hasattr(self, "plotted_lines"):
+                                self.plotted_lines = {}
+                            self.plotted_lines[storage_key] = line
+                        except Exception:
+                            pass
+
+                    imported_count += 1
+
+            except Exception as ex:
+                errors.append(f"{os.path.basename(fp)}: {ex}")
+
+        # Rescale and redraw
+        try:
+            if hasattr(self, "rescale_plotted_axes"):
+                self.rescale_plotted_axes()
+            else:
+                self.plotted_ax.relim()
+                self.plotted_ax.autoscale_view()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "canvas_plotted"):
+                self.canvas_plotted.draw_idle()
+        except Exception:
+            pass
+
+        if errors:
+            # Keep message short; show first several errors
+            msg = "Some files could not be imported:\n" + "\n".join(errors[:10])
+            if len(errors) > 10:
+                msg += f"\n... ({len(errors) - 10} more)"
+            QMessageBox.warning(self, "Import CSV", msg)
+        elif imported_count == 0:
+            QMessageBox.information(self, "Import CSV", "No curves were imported (no valid numeric data found).")
 
     def export_ascii(self):
         if not self.plot_data:

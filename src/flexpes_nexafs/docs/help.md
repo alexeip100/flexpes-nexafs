@@ -1,5 +1,6 @@
 # FlexPES NEXAFS Plotter
 
+
 ## Overview
 This application opens HDF5 files with NEXAFS spectra from the FlexPES
 beamline (MAX IV Laboratory). It supports pre-processing, visualization,
@@ -83,18 +84,42 @@ from the plots.
   The summed result then behaves like any other main curve for background
   subtraction and post-normalization.
 
+
+- **Group BG:** *(checkbox)*
+  Enabled when **two or more** spectra are selected **and** **Choose BG** is set to **Automatic**.
+  When checked, Automatic BG is applied in a *group-consistent* way so you can background-subtract and **Pass** the
+  full selection to **Plotted Data** in one step.
+
+  **Background model used in group mode (Automatic BG):**
+  - Each spectrum starts from its *own* **Automatic BG** (a low-degree polynomial fitted to the pre-edge, with the same
+    end-slope constraint as in single-spectrum mode).
+  - If post-normalization is **Area**, the background is then adjusted per spectrum by adding a small **affine term**
+    *(constant + global linear term)* so that (i) the **pre-edge baseline after subtraction is 0**, and (ii) the
+    **absorption jump after Area normalization** is consistent across the selected spectra.
+
+- **Match pre-edge slope:** *(checkbox)*
+  Available only when **Group BG** is active. When enabled, the group mode additionally adjusts the
+  backgrounds so that the **pre-edge slope after BG subtraction** is consistent across the selected spectra
+  (median target).
+
+  **Important:** With **Match pre-edge slope** enabled, the final background is **no longer a single pure polynomial**.
+  Internally, the polynomial background is supplemented by a *localized pre-edge correction term* that is active in the
+  pre-edge region and smoothly tapers to zero before the edge (so it does not distort the post-edge window). This extra
+  degree of freedom makes it possible to align pre-edge slopes across a group while keeping the Area-normalized jump
+  consistent.
+
 - **Pass:**  
   Send the current processed main curve (possibly normalized, summed and
   background-subtracted) to the **Plotted Data** tab.  
   The curve is added to the Plotted list without clearing existing curves.
 
-- **Export ASCII:**  
-  Export the current processed main curve (x/y) as a text file (CSV-like)
-  for further analysis.
+- **Export:**  
+  Export the current **Processed Data** main curve to a CSV file.
+  (This button is separate from the **Export/Import** menu in the *Plotted Data* tab.)
 
-### Bottom Controls (background + post-normalization)
+### Bottom Controls (BG + post-normalization)
 
-- **Choose background:** *(combobox: None / Automatic / Manual)*  
+- **Choose BG:** *(combobox: None / Automatic / Manual)*  
   - **None:** no background is fitted or subtracted.
   - **Automatic:** polynomial background fit with an additional constraint
     so that the derivative at the end of the background matches the slope
@@ -106,11 +131,12 @@ from the plots.
 - **Poly degree:**  
   Polynomial degree for the background fit (typically 0–3).
 
+
 - **Pre-edge (%):**  
   Fraction of the spectrum (in %) treated as “pre-edge” region for
   background estimation.
 
-- **Subtract background?**  
+- **Subtract BG?**  
   When checked, the plotted curve on the Processed Data tab is shown as
   **(signal − background)**. This also enables *post-normalization*.
 
@@ -123,10 +149,14 @@ from the plots.
   - **Area:** scale to the integrated area under the curve.
 
 > **Note:** Background subtraction and post-normalization are only
-> available when there is a single effective main curve: either one
-> dataset visible, or multiple datasets combined via **Sum them up?**.
-> If several raw curves are visible and summing is disabled, the
-> background/post-normalization controls are automatically disabled.
+> available when there is a single effective main curve (one dataset visible, or multiple datasets combined via **Sum them up?**).
+> 
+> If several raw curves are visible and summing is disabled, BG/post-normalization are normally disabled — **except** when
+> BG mode is **Automatic** and **Group BG** is enabled.
+> 
+> In that group mode, when **Subtract BG?** is **OFF**, BG curves are shown for all selected curves.
+> When **Subtract BG?** is **ON**, the view switches to the BG-subtracted curves, and the **Pass** button can pass
+> **all selected curves** to the Plotted Data tab at once.
 
 ---
 
@@ -182,11 +212,16 @@ The curve list is fully interactive:
 
 ### Legend
 
-- **Legend checkbox:** toggle legend visibility on the Plotted Data plot.
-- **Dragging:** click and drag the legend box to reposition it anywhere
-  inside the axes.
-- **Renaming entries:** right-click on a legend label to rename that
-  curve. The new name is stored and reused when the legend is rebuilt.
+Legend behavior is controlled via the **Legend:** drop-down on the Plotted Data panel:
+
+- **User-defined (default):** shows the legend and lets you set custom curve names.
+  - In the legend, entries initially appear as `<select curve name>`.
+  - Right-click a legend label to rename that curve. The new name is stored and reused when the legend is rebuilt.
+- **Entry number:** shows the legend and automatically labels curves by their entry ID.
+  - For example, `entry6567` becomes `6567` in the legend.
+- **None:** removes the legend from the plot.
+
+You can always reposition the legend (when shown) by dragging the legend box inside the axes.
 
 ### Annotation
 
@@ -221,9 +256,10 @@ The curve list is fully interactive:
 
 ### Export / Clear
 
-- **Export ASCII (Plotted):**  
-  Export the curves in the Plotted Data tab (x/y) to ASCII/CSV for
-  external analysis.
+- **Export/Import (Plotted):**  
+  Click to open a menu:
+  - **Export CSV:** export the curves currently shown in the Plotted Data tab as CSV.
+  - **Import CSV:** load one or several previously exported CSV files into the Plotted Data plot.
 
 - **Clear Plotted Data:**  
   Remove all curves from the Plotted Data tab (but keep raw and processed
