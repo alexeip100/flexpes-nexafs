@@ -1,19 +1,12 @@
 
 """Auto-generated DataMixin extracted from ui.py."""
 import os
-import sys
 import time
-import csv
 import h5py
 import numpy as np
-import matplotlib.pyplot as plt
-plt.ioff()
 from importlib.resources import files
-from PyQt5.QtWidgets import (QApplication, QFileDialog, QTreeWidget, QTreeWidgetItem, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTabWidget, QCheckBox, QComboBox, QSpinBox, QMessageBox, QSizePolicy, QDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
-
+from PyQt5.QtWidgets import QApplication, QFileDialog, QTreeWidgetItem, QDialog
+from PyQt5.QtCore import Qt, QTimer
 class DataMixin:
     def _open_h5_read(self, path, retries: int = 3):
         """
@@ -207,7 +200,6 @@ class DataMixin:
         self.update_file_label()
         self.update_pass_button_state()
         # Ensure the 'All in channel' combo is populated after opening files
-        from PyQt5.QtCore import QTimer
         QTimer.singleShot(0, getattr(self, '_refresh_all_in_channel_combo', lambda: None))
         # Refresh 'All in channel' combo and checkbox
         try:
@@ -216,7 +208,6 @@ class DataMixin:
             if hasattr(self, 'cb_all_in_channel'):
                 self.cb_all_in_channel.setChecked(False)
             setattr(self, '_last_all_channel_filter', None)
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, getattr(self, '_refresh_all_in_channel_combo', lambda: None))
         except Exception:
             pass
@@ -467,10 +458,8 @@ class DataMixin:
             # Ensure this scans internally with short-lived opens too
             self.populate_norm_channels(abs_path)
             # Refresh 'All in channel' combo after loading this file
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, getattr(self, '_refresh_all_in_channel_combo', lambda: None))
             # Update 'All in channel' combo now that files are loaded
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, getattr(self, '_refresh_all_in_channel_combo', lambda: None))
     
         except Exception as e:
@@ -479,30 +468,49 @@ class DataMixin:
     def populate_norm_channels(self, abs_path):
         """Populate normalization channels using a short-lived file open (non-locking)."""
         self.combo_norm.clear()
-        default_channel = "b107a_em_03_ch2"
-        default_index = -1
+        # Default I0 candidates come from the active channel-mapping profile (beamline).
+        # The *first* candidate is treated as the preferred default.
+        default_candidates = ["b107a_em_03_ch2", "b107a_em_04_ch2", "Pt_No"]
+        try:
+            cc = getattr(self, "channel_config", None)
+            if cc is not None:
+                cands = cc.get_candidates("I0")
+                if cands:
+                    default_candidates = list(cands)
+        except Exception:
+            pass
+
         try:
             with (self._open_h5_read(abs_path)) as f:
                 for key in f.keys():
                     entry = f[key]
                     if "measurement" in entry:
                         meas_group = entry["measurement"]
-                        for idx, (ds_name, ds_obj) in enumerate(meas_group.items()):
+                        for ds_name, ds_obj in meas_group.items():
                             if isinstance(ds_obj, h5py.Dataset) and ds_obj.ndim == 1:
                                 self.combo_norm.addItem(ds_name)
-                                if ds_name == default_channel:
-                                    default_index = idx
                         break
         except Exception:
             pass
-    
-        if default_index != -1:
-            self.combo_norm.setCurrentIndex(default_index)
-        else:
-            idx = self.combo_norm.findText(default_channel)
+
+        # Prefer exact match in candidate order (first candidate wins).
+        for cand in default_candidates:
+            cand = str(cand).strip()
+            if not cand:
+                continue
+            idx = self.combo_norm.findText(cand)
             if idx != -1:
                 self.combo_norm.setCurrentIndex(idx)
+                return
 
+        # Substring fallback (still using candidate order).
+        for i in range(self.combo_norm.count()):
+            txt = str(self.combo_norm.itemText(i))
+            for cand in default_candidates:
+                cand = str(cand).strip()
+                if cand and cand in txt:
+                    self.combo_norm.setCurrentIndex(i)
+                    return
     def load_subtree(self, item):
         data = item.data(0, Qt.UserRole)
         if not data:
@@ -609,7 +617,19 @@ def lookup_energy(viewer, abs_path: str, parent: str, length: int):
                 search_roots.append(parent)
             else:
                 search_roots.append("")
-            candidates = ("x", "energy", "photon_energy")
+            # Candidate names for the energy axis can be extended via the
+            # channel mapping ("Energy" role).
+            candidates = ["x", "energy", "photon_energy"]
+            try:
+                cc = getattr(viewer, "channel_config", None)
+                if cc is not None:
+                    extra = cc.get_candidates("Energy")
+                    for name in extra:
+                        name = str(name)
+                        if name and name not in candidates:
+                            candidates.append(name)
+            except Exception:
+                pass
             for root in search_roots:
                 for name in candidates:
                     p = f"{root}/{name}" if root else name

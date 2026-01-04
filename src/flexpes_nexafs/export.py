@@ -1,19 +1,52 @@
 """Auto-generated ExportMixin extracted from ui.py."""
 import os
-import sys
 import time
 import csv
-import h5py
+import re
 import numpy as np
-import matplotlib.pyplot as plt
-plt.ioff()
-from PyQt5.QtWidgets import (QApplication, QFileDialog, QTreeWidget, QTreeWidgetItem, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTabWidget, QCheckBox, QComboBox, QSpinBox, QMessageBox, QSizePolicy, QDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
+from PyQt5.QtWidgets import QFileDialog, QMessageBox, QDialog
+from PyQt5.QtCore import Qt
 
 class ExportMixin:
+    def _csv_save_dialog(self, title, default_dir="", default_filename=""):
+        """Non-fullscreen save dialog for CSV."""
+        dlg = QFileDialog(self, title, default_dir)
+        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+        dlg.setAcceptMode(QFileDialog.AcceptSave)
+        dlg.setFileMode(QFileDialog.AnyFile)
+        dlg.setNameFilter("CSV Files (*.csv)")
+        dlg.setDefaultSuffix("csv")
+        dlg.resize(900, 600)
+        dlg.setMinimumSize(700, 500)
+        if default_filename:
+            dlg.selectFile(default_filename)
+        if dlg.exec_() == QDialog.Accepted:
+            files = dlg.selectedFiles()
+            return files[0] if files else ""
+        return ""
+
+    def _csv_open_dialog(self, title, default_dir=""):
+        """Non-fullscreen open dialog for CSV (multi-select)."""
+        dlg = QFileDialog(self, title, default_dir)
+        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+        dlg.setAcceptMode(QFileDialog.AcceptOpen)
+        dlg.setFileMode(QFileDialog.ExistingFiles)
+        dlg.setNameFilter("CSV Files (*.csv);;All Files (*)")
+        dlg.resize(900, 600)
+        dlg.setMinimumSize(700, 500)
+        if dlg.exec_() == QDialog.Accepted:
+            return dlg.selectedFiles() or []
+        return ""
+
     def export_ascii_plotted(self):
+        """Export visible curves from the Plotted Data panel to CSV.
+
+        Column naming rules:
+          - Legend = 'Entry number': headers are entry numbers (entry#### -> ####). All curves must have an entry id.
+          - Legend = 'User-defined': headers are the user-defined curve names. Placeholder '<select curve name>' is not allowed.
+          - Legend = 'None': export is blocked (no labeling scheme).
+        """
+
         # Determine visible curves in the *current* plotted-list order
         visible_keys = []
         try:
@@ -28,37 +61,139 @@ class ExportMixin:
         except Exception:
             visible_keys = []
 
-        # Fallback: use insertion order from plotted_lines if needed
         if not visible_keys:
-            visible_keys = [key for key, line in self.plotted_lines.items() if line.get_visible()]
+            try:
+                visible_keys = [k for k, ln in self.plotted_lines.items() if ln.get_visible()]
+            except Exception:
+                visible_keys = []
+
         if not visible_keys:
             QMessageBox.warning(self, "Export", "No visible curves to export.")
             return
-        first_line = self.plotted_lines[visible_keys[0]]
-        x_data = first_line.get_xdata()
-        min_len = len(x_data)
-        curve_names, y_columns = [], []
-        for key in visible_keys:
-            line = self.plotted_lines[key]
-            y = line.get_ydata()
-            min_len = min(min_len, len(y))
-            label = self.custom_labels.get(key) or "<select curve name>"
-            curve_names.append(label)
-            y_columns.append(y)
-        x_data = x_data[:min_len]
-        y_arrays = [np.array(y)[:min_len] for y in y_columns]
-        header = ["X"] + curve_names
-        file_path, _ = QFileDialog.getSaveFileName(self, "Export", "", "CSV Files (*.csv)")
-        if file_path:
+
+        # Legend mode (created in ui.py)
+        try:
+            legend_mode = str(self.legend_mode_combo.currentText()).strip()
+        except Exception:
+            legend_mode = "User-defined"
+        legend_mode_norm = legend_mode.lower()
+
+        if legend_mode_norm == "none":
+            QMessageBox.warning(
+                self,
+                "Export Not Possible",
+                "CSV export requires curve names.\n\n"
+                "Set Legend to 'Entry number' or 'User-defined' before exporting."
+            )
+            return
+
+        def _entry_digits_from_meta(key: str):
+            # Prefer plotted metadata
             try:
-                with open(file_path, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(header)
-                    for i in range(min_len):
-                        row = [f"{x_data[i]:.6g}"] + [f"{col[i]:.6g}" for col in y_arrays]
-                        writer.writerow(row)
-            except Exception as ex:
-                print("Error writing CSV:", ex)
+                meta = getattr(self, "plotted_metadata", {}) or {}
+                src_entry = (meta.get(key, {}) or {}).get("source_entry", "") or ""
+                m = re.search(r"entry(\d+)", str(src_entry))
+                if m:
+                    return m.group(1)
+            except Exception:
+                pass
+            # Fallback: parse from key/path itself
+            try:
+                m = re.search(r"entry(\d+)", str(key))
+                if m:
+                    return m.group(1)
+            except Exception:
+                pass
+            return None
+
+        # Collect x/y and headers
+        first_line = self.plotted_lines[visible_keys[0]]
+        x_data = np.asarray(first_line.get_xdata())
+        min_len = len(x_data)
+
+        headers = []
+        y_columns = []
+
+        if legend_mode_norm.startswith("entry"):
+            for key in visible_keys:
+                entry_num = _entry_digits_from_meta(key)
+                if not entry_num:
+                    QMessageBox.warning(
+                        self,
+                        "Export Not Possible",
+                        "Legend is set to 'Entry number', but at least one visible curve has no 'entry####' identifier "
+                        "(for example, a curve imported from CSV).\n\n"
+                        "Either switch Legend to 'User-defined' and assign names to all curves, or export only curves "
+                        "that originate from HDF5 entries."
+                    )
+                    return
+                ln = self.plotted_lines[key]
+                y = np.asarray(ln.get_ydata())
+                min_len = min(min_len, len(y))
+                headers.append(entry_num)
+                y_columns.append(y)
+        else:
+            # Require explicit user-defined names for ALL visible curves
+            for key in visible_keys:
+                try:
+                    lbl = (getattr(self, "custom_labels", {}) or {}).get(key)
+                except Exception:
+                    lbl = None
+                lbl = "" if lbl is None else str(lbl).strip()
+                if (not lbl) or (lbl == "<select curve name>"):
+                    QMessageBox.warning(
+                        self,
+                        "Export Not Possible",
+                        "Legend is set to 'User-defined', but at least one visible curve still has no user-defined name "
+                        "(it shows '<select curve name>').\n\n"
+                        "Please name all curves (click legend entries) or switch Legend to 'Entry number'."
+                    )
+                    return
+                ln = self.plotted_lines[key]
+                y = np.asarray(ln.get_ydata())
+                min_len = min(min_len, len(y))
+                headers.append(lbl)
+                y_columns.append(y)
+
+        # Sanitize and ensure unique headers
+        clean = []
+        counts = {}
+        for h in headers:
+            h2 = str(h).replace("\n", " ").replace("\r", " ").replace(",", " ").strip()
+            if h2 == "<select curve name>":
+                QMessageBox.warning(self, "Export Not Possible", "Invalid curve name '<select curve name>'.")
+                return
+            base = h2 if h2 else "curve"
+            n = counts.get(base, 0) + 1
+            counts[base] = n
+            clean.append(base if n == 1 else f"{base}_{n}")
+
+        x_out = x_data[:min_len]
+        y_out = [np.asarray(y)[:min_len] for y in y_columns]
+        header_row = ["X"] + clean
+
+        # Default dir: any opened HDF5 dir
+        any_file = None
+        try:
+            any_file = next(iter(getattr(self, "hdf5_files", []) or []), None)
+        except Exception:
+            any_file = None
+        default_dir = os.path.dirname(any_file) if any_file else ""
+
+        file_path = self._csv_save_dialog("Export CSV", default_dir, "")
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(header_row)
+                for i in range(min_len):
+                    row = [f"{x_out[i]:.6g}"] + [f"{col[i]:.6g}" for col in y_out]
+                    writer.writerow(row)
+        except Exception as ex:
+            QMessageBox.critical(self, "Export Error", f"Failed to write CSV:\n{ex}")
+
 
 
     def import_csv_plotted(self):
@@ -78,12 +213,7 @@ class ExportMixin:
             any_file = None
         default_dir = os.path.dirname(any_file) if any_file else ""
 
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Import CSV",
-            default_dir,
-            "CSV Files (*.csv);;All Files (*)",
-        )
+        file_paths = self._csv_open_dialog("Import CSV", default_dir)
         if not file_paths:
             return
 

@@ -2,51 +2,24 @@ from . import processing
 from . import data
 import os
 os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")  # allow concurrent readers on Windows
-import csv
 import h5py
-import time
 import sys
-import numpy as np
 import matplotlib.pyplot as plt
 plt.ioff() 
 
 from PyQt5.QtWidgets import (
 
-    QApplication, QFileDialog, QMainWindow, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget, QPushButton, QLabel, QHBoxLayout, QTabWidget,
+    QApplication, QMainWindow, QTreeWidget, QVBoxLayout, QWidget, QPushButton, QLabel, QHBoxLayout, QTabWidget,
     QCheckBox, QComboBox, QSpinBox, QMessageBox, QSizePolicy, QSplitter,
-    QInputDialog, QColorDialog, QListWidget, QListWidgetItem, QDialog,
-    QMenu, QTextBrowser, QSlider, QDoubleSpinBox
+    QListWidget, QMenu, QSlider, QDoubleSpinBox
 , QAbstractItemView)
 
 # ---- Compatibility shims (Phase 2b) ----
-def _proc_robust_polyfit_on_normalized(self, xs, ys, deg, x_eval):
-    try:
-        from . import processing as _p
-        fn = getattr(_p, "robust_polyfit_on_normalized", None)
-        if fn is not None:
-            return fn(xs, ys, deg, x_eval)
-    except Exception:
-        pass
-    return self._robust_polyfit_on_normalized(xs, ys, deg, x_eval)
-
-def _proc_safe_post_normalize(self, x, y, mode):
-    try:
-        from . import processing as _p
-        fn = getattr(_p, "safe_post_normalize", None)
-        if fn is not None:
-            return fn(x, y, mode)
-    except Exception:
-        pass
-    return self._safe_post_normalize(x, y, mode)
 # ----------------------------------------
-from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint
+from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QTimer, QPoint
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from datetime import datetime
-from .utils.sorting import parse_entry_number
-from .widgets.curve_item import CurveListItemWidget
 
 ###############################################################################
 # Helper function to parse integer from something like "entry1001"
@@ -59,6 +32,7 @@ from .processing import ProcessingMixin
 from .plotting import PlottingMixin
 from .export import ExportMixin
 from .library import LibraryMixin
+from .channel_setup import ChannelConfigManager, ChannelSetupDialog
 class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, LibraryMixin, QMainWindow):
 
     def on_plotted_list_reordered(self):
@@ -118,17 +92,126 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 self.toggle_plotted_annotation(show)
         except Exception:
             pass
+
+    def on_setup_channels_clicked(self):
+        """Open the channel mapping dialog (beamline profiles)."""
+        try:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Setup channels")
+            msg.setText(
+                "The default channel selection corresponds to the setup used at the MAX IV "
+                "beamline FlexPES (branch A).\n\n"
+                "Here you can assign channel names for other beamline/branchline setups and "
+                "save them for future use."
+            )
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            ret = msg.exec_()
+            if ret != QMessageBox.Ok:
+                return
+        except Exception:
+            # If the message box fails for any reason, still try opening the dialog.
+            pass
+
+        dlg = ChannelSetupDialog(self.channel_config, parent=self)
+        if dlg.exec_() == dlg.Accepted:
+            try:
+                # Persist updated mapping and refresh UI defaults.
+                self.channel_config.save_to_user()
+            except Exception:
+                pass
+            try:
+                self._apply_channel_config_to_ui()
+            except Exception:
+                pass
+
+    def _apply_channel_config_to_ui(self):
+        """Refresh widgets that depend on channel mapping (I0 default, 'All TEY' filters, etc.)."""
+        try:
+            if hasattr(self, 'channel_profile_label'):
+                self.channel_profile_label.setText(f"Active beamline: <b>{self.channel_config.active_profile()}</b>")
+        except Exception:
+            pass
+
+        # Refresh normalization channels (I0 default selection)
+        try:
+            files = list(getattr(self, "hdf5_files", {}).keys())
+            if files:
+                self.populate_norm_channels(files[0])
+        except Exception:
+            pass
+
+        # Re-apply group checkboxes if they are checked (patterns may have changed)
+        try:
+            for role, cb in [("TEY", getattr(self, "cb_all_tey", None)),
+                             ("PEY", getattr(self, "cb_all_pey", None)),
+                             ("TFY", getattr(self, "cb_all_tfy", None)),
+                             ("PFY", getattr(self, "cb_all_pfy", None))]:
+                if cb is not None and cb.isChecked():
+                    self._on_all_role_checkbox(role, Qt.Checked)
+        except Exception:
+            pass
+
+        # Replot to reflect any changes
+        try:
+            self.update_plot_raw()
+            self.update_plot_processed()
+        except Exception:
+            pass
+
+    def _on_all_role_checkbox(self, role: str, state):
+        """Toggle selection of all datasets matching the configured pattern for a role."""
+        try:
+            checked = (state == Qt.Checked)
+        except Exception:
+            checked = bool(state)
+
+        pattern = ""
+        try:
+            pattern = str(self.channel_config.get_pattern(role) or "")
+        except Exception:
+            pattern = ""
+        if not pattern:
+            return
+        try:
+            self.set_group_visibility(pattern, checked)
+        except Exception:
+            pass
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FlexPES NEXAFS Plotter")
-        self.setGeometry(100, 100, 1500, 600)
+        # Default window position/size (tuned for smaller laptop screens)
+        self.setGeometry(50, 50, 1650, 800)
 
-        self.VERSION_NUMBER = "2.1.0"
-        self.CREATION_DATETIME = "2025-12-24"
+        # Place the main window near the top-left of the available screen area
+        # (helps on small laptop screens).
+        try:
+            from PyQt6 import QtGui  # type: ignore
+        except Exception:
+            try:
+                from PyQt5 import QtGui  # type: ignore
+            except Exception:
+                QtGui = None  # type: ignore
+        try:
+            if QtGui is not None:
+                scr = QtGui.QGuiApplication.primaryScreen()
+                if scr is not None:
+                    g = scr.availableGeometry()
+                    self.move(g.left() + 50, g.top() + 50)
+        except Exception:
+            pass
+
+
+        self.VERSION_NUMBER = "2.2.0"
+        self.CREATION_DATETIME = "2025-12-30"
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
         self.energy_cache = {}
+
+        # Channel mapping (beamline profiles)
+        # Default: FlexPES-A (can be edited via the "Setup channels" dialog).
+        self.channel_config = ChannelConfigManager()
 
         self.manual_mode = False
         self.manual_points = []
@@ -170,7 +253,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.splitter.addWidget(self.left_panel_widget)
 
         self.open_close_layout = QHBoxLayout()
-        self.open_button = QPushButton("Open HDF5 File")
+        self.open_button = QPushButton("Open HDF5")
         self.open_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.open_button.clicked.connect(self.open_file)
         self.open_close_layout.addWidget(self.open_button)
@@ -196,6 +279,32 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.about_action.triggered.connect(self.show_about_info)
 
         self.left_panel.addLayout(self.open_close_layout)
+
+        # Channel mapping setup
+        self.setup_channels_row = QHBoxLayout()
+        self.setup_channels_button = QPushButton("Setup channels")
+        # Keep the button as narrow as possible (do not stretch to full width).
+        self.setup_channels_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        try:
+            self.setup_channels_button.setFixedWidth(self.setup_channels_button.sizeHint().width())
+        except Exception:
+            pass
+        self.setup_channels_button.clicked.connect(self.on_setup_channels_clicked)
+        self.setup_channels_row.addWidget(self.setup_channels_button)
+
+        active_profile = self.channel_config.active_profile()
+        self.channel_profile_label = QLabel(f"Active beamline: <b>{active_profile}</b>")
+        try:
+            self.channel_profile_label.setTextFormat(Qt.RichText)
+        except Exception:
+            pass
+        self.channel_profile_label.setWordWrap(False)
+        self.channel_profile_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Keep label styling minimal so it follows the application's global font size.
+        self.channel_profile_label.setStyleSheet("color: #555;")
+        self.setup_channels_row.addWidget(self.channel_profile_label)
+
+        self.left_panel.addLayout(self.setup_channels_row)
 
         self.file_label = QLabel("No file open")
         self.file_label.setWordWrap(True)
@@ -240,33 +349,25 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.raw_group_layout = QHBoxLayout()
 
         self.cb_all_tey = QCheckBox("All TEY data")
-        self.cb_all_tey.stateChanged.connect(
-            lambda state: self.set_group_visibility("_ch1", state == Qt.Checked)
-        )
+        self.cb_all_tey.stateChanged.connect(lambda state, r="TEY": self._on_all_role_checkbox(r, state))
         self.raw_group_layout.addWidget(self.cb_all_tey)
 
         self.cb_all_pey = QCheckBox("All PEY data")
-        self.cb_all_pey.stateChanged.connect(
-            lambda state: self.set_group_visibility("_ch3", state == Qt.Checked)
-        )
+        self.cb_all_pey.stateChanged.connect(lambda state, r="PEY": self._on_all_role_checkbox(r, state))
         self.raw_group_layout.addWidget(self.cb_all_pey)
 
         self.cb_all_tfy = QCheckBox("All TFY data")
-        self.cb_all_tfy.stateChanged.connect(
-            lambda state: self.set_group_visibility("roi2_dtc", state == Qt.Checked)
-        )
+        self.cb_all_tfy.stateChanged.connect(lambda state, r="TFY": self._on_all_role_checkbox(r, state))
         self.raw_group_layout.addWidget(self.cb_all_tfy)
 
         self.cb_all_pfy = QCheckBox("All PFY data")
-        self.cb_all_pfy.stateChanged.connect(
-            lambda state: self.set_group_visibility("roi1_dtc", state == Qt.Checked)
-        )
+        self.cb_all_pfy.stateChanged.connect(lambda state, r="PFY": self._on_all_role_checkbox(r, state))
         self.raw_group_layout.addWidget(self.cb_all_pfy)
 
         # --- Example-inspired: 'All in channel' checkbox + combo ---
         self.cb_all_in_channel = QCheckBox("All in channel:")
         self.combo_all_channel = QComboBox()
-        try: self.combo_all_channel.setMinimumWidth(240)
+        try: self.combo_all_channel.setMinimumWidth(220)
         except Exception: pass
         self.raw_group_layout.addWidget(self.cb_all_in_channel)
         self.raw_group_layout.addWidget(self.combo_all_channel)
@@ -290,11 +391,13 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
 
         self.raw_splitter.addWidget(self.raw_left_widget)
         self.raw_tree = QTreeWidget()
+        try: self.raw_tree.setMinimumWidth(300)
+        except Exception: pass
         self.raw_tree.setHeaderHidden(True)
         (self.raw_tree.itemChanged.connect( self.raw_tree_item_changed )) if hasattr(self, 'raw_tree_item_changed') else None
         self.raw_splitter.addWidget(self.raw_tree)
-        self.raw_splitter.setStretchFactor(0, 40)
-        self.raw_splitter.setStretchFactor(1, 60)
+        self.raw_splitter.setStretchFactor(0, 32)
+        self.raw_splitter.setStretchFactor(1, 68)
         self.data_tabs.addTab(self.raw_tab, "Raw Data")
 
         #######################################################################
@@ -313,7 +416,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
 
         self.chk_normalize = QCheckBox("Normalize by I₀?")
         self.proc_controls_top_layout.addWidget(self.chk_normalize)
-        self.proc_controls_top_layout.addWidget(QLabel("Set I₀ channel:"))
+        self.proc_controls_top_layout.addWidget(QLabel("Choose I₀:"))
         self.combo_norm = QComboBox()
         self.proc_controls_top_layout.addWidget(self.combo_norm)
         self.combo_norm.setEnabled(False)
@@ -334,7 +437,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.proc_controls_top_layout.addWidget(self.chk_group_bg)
 
         # Optional: match pre-edge slope across the group (only meaningful in group Auto BG)
-        self.chk_group_bg_slope = QCheckBox("Match pre-edge slope")
+        self.chk_group_bg_slope = QCheckBox("Match pre-edge")
         self.chk_group_bg_slope.setChecked(False)
         self.chk_group_bg_slope.setEnabled(False)
         self.chk_group_bg_slope.setToolTip(
@@ -375,7 +478,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
 
         self.proc_controls_bottom_layout.addWidget(QLabel("Choose BG:"))
         self.combo_bg = QComboBox()
-        self.combo_bg.addItems(["None", "Automatic", "Manual"])
+        self.combo_bg.addItems(["None", "Auto", "Manual"])
         self.proc_controls_bottom_layout.addWidget(self.combo_bg)
 
         self.proc_controls_bottom_layout.addWidget(QLabel("Poly degree:"))
@@ -402,14 +505,16 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.proc_left_layout.addWidget(self.proc_controls_bottom, 0)
 
         self.proc_tree = QTreeWidget()
+        try: self.proc_tree.setMinimumWidth(320)
+        except Exception: pass
         self.proc_tree.setHeaderHidden(True)
         (self.proc_tree.itemChanged.connect( self.proc_tree_item_changed )) if hasattr(self, 'proc_tree_item_changed') else None
 
         self.proc_splitter = QSplitter(Qt.Horizontal)
         self.proc_splitter.addWidget(self.proc_left_widget)
         self.proc_splitter.addWidget(self.proc_tree)
-        self.proc_splitter.setStretchFactor(0, 35)
-        self.proc_splitter.setStretchFactor(1, 65)
+        self.proc_splitter.setStretchFactor(0, 28)
+        self.proc_splitter.setStretchFactor(1, 72)
 
         self.proc_tab_layout = QVBoxLayout(self.proc_tab)
         self.proc_tab_layout.addWidget(self.proc_splitter)
@@ -465,14 +570,11 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         # BOTTOM ROW (RE-ORDERED): Waterfall controls and Grid on the left; then stretch; then Export and Clear buttons
         # ----------------------------------------------------------------------
         self.plot_buttons_layout = QHBoxLayout()
-
-        # Waterfall controls
-        self.waterfall_mode_combo = QComboBox()
-        self.waterfall_mode_combo.addItems(["None", "Adaptive step", "Uniform step"])
-        self.waterfall_mode_combo.setCurrentIndex(0)
-        self.plot_buttons_layout.addWidget(QLabel("Waterfall:"))
-        self.plot_buttons_layout.addWidget(self.waterfall_mode_combo)
-        self.waterfall_mode_combo.currentIndexChanged.connect(self.recompute_waterfall_layout)
+        # Waterfall (Uniform step only)
+        self.waterfall_checkbox = QCheckBox("Waterfall")
+        self.waterfall_checkbox.setChecked(False)
+        self.plot_buttons_layout.addWidget(self.waterfall_checkbox)
+        self.waterfall_checkbox.stateChanged.connect(self.on_waterfall_toggled)
         self.waterfall_slider = QSlider(Qt.Horizontal)
         self.waterfall_slider.setRange(0, 100)
         self.waterfall_slider.setValue(0)
@@ -531,7 +633,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             )
         )
 
-        self.clear_plotted_data_button = QPushButton("Clear Plotted Data")
+        self.clear_plotted_data_button = QPushButton("Clear Plotted")
         self.clear_plotted_data_button.clicked.connect(self.clear_plotted_data)
         self.clear_plotted_data_button.setMaximumWidth(150)
         self.plot_buttons_layout.addWidget(self.clear_plotted_data_button)
@@ -542,6 +644,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.plotted_splitter = QSplitter(Qt.Horizontal)
         self.plotted_splitter.addWidget(self.plot_left_widget)
         self.plotted_list = QListWidget()
+        try: self.plotted_list.setMinimumWidth(300)
+        except Exception: pass
         self.plotted_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.plotted_list.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.plotted_list.setDragEnabled(True)
@@ -555,8 +659,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             self.plotted_list.model().rowsMoved.connect(lambda *args: self.on_plotted_list_reordered())
         except Exception:
             pass
-        self.plotted_splitter.setStretchFactor(0, 65)
-        self.plotted_splitter.setStretchFactor(1, 35)
+        self.plotted_splitter.setStretchFactor(0, 55)
+        self.plotted_splitter.setStretchFactor(1, 45)
         self.data_tabs.addTab(self.plotted_splitter, "Plotted Data")
 
         #######################################################################
@@ -611,19 +715,19 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
     def _apply_initial_splitter_sizes(self):
         """Apply initial splitter sizes for a more balanced default layout."""
         try:
-            # Main splitter: make left tree panel ~20% narrower than the old 1:2 default (~33% -> ~26%)
+            # Main splitter: make left tree panel ~20% narrower (~33% -> ~22%)
             total = int(self.splitter.width())
             if total > 0:
-                left = max(180, int(total * 0.264))
+                left = max(200, int(total * 0.25))
                 self.splitter.setSizes([left, max(200, total - left)])
         except Exception:
             pass
 
         # Tab splitters: widen the right-hand curve-tree widget vs previous defaults
         specs = [
-            ("raw_splitter", 0.60),     # wider curve tree on Raw tab
-            ("proc_splitter", 0.68),    # wider curve tree on Processed tab
-            ("plotted_splitter", 0.35)  # narrower list; wider plot on Plotted tab
+            ("raw_splitter", 0.62),     # wider curve tree on Raw tab
+            ("proc_splitter", 0.66),    # wider curve tree on Processed tab
+            ("plotted_splitter", 0.42)  # wider plotted list
         ]
         for name, right_frac in specs:
             try:
@@ -863,65 +967,13 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             except Exception:
                 pass
 
+MainWindow = HDF5Viewer  # backward-compatible alias
+
 def launch():
+    """Launch the GUI (backwards-compatible helper)."""
     import sys
-    # Use Qt from PyQt5 (add this import if not already present at the top)
-    from PyQt5.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication(sys.argv)
-
-    # If your main window class has a different name than HDF5Viewer, change it here:
-    w = HDF5Viewer()
-    w.show()
-    sys.exit(app.exec_())
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    viewer = HDF5Viewer()
-    viewer.show()
-    sys.exit(app.exec_())
-
-
-# ---- Split-structure compatibility layer ----
-# Keep alias so the new entry point can import MainWindow uniformly.
-try:
-    MainWindow = HDF5Viewer  # alias to preserve class name externally
-except NameError:
-    # If class was renamed, leave MainWindow undefined to raise at import time
-    pass
-
-def launch():
-    # Backwards compatibility helper if older scripts import launch()
     from PyQt5 import QtWidgets
-    import sys
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     win = MainWindow()
     win.show()
     sys.exit(app.exec_())
-
-    def _enforce_all_channel_selection(self):
-        """Ensure the combobox shows the user's desired selection, if available, without causing re-entrant applies."""
-        try:
-            desired = getattr(self, "_desired_all_channel_selection", None)
-            if not isinstance(desired, str) or not desired:
-                return
-            # If already selected, nothing to do
-            if self.combo_all_channel.currentText() == desired:
-                return
-            # If desired exists in items, set it with signals blocked
-            count = self.combo_all_channel.count()
-            if count <= 0:
-                return
-            idx = -1
-            for i in range(count):
-                if self.combo_all_channel.itemText(i) == desired:
-                    idx = i; break
-            if idx >= 0:
-                self.combo_all_channel.blockSignals(True)
-                try:
-                    self.combo_all_channel.setCurrentIndex(idx)
-                finally:
-                    self.combo_all_channel.blockSignals(False)
-        except Exception:
-            pass

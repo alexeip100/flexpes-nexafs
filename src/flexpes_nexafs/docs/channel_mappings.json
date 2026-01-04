@@ -1,0 +1,47 @@
+{
+  "active_profile": "FlexPES-A",
+  "profiles": {
+    "FlexPES-A": {
+      "TEY": "b107a_em_03_ch1",
+      "PEY": "b107a_em_03_ch3",
+      "TFY": "xspress3mini_roi2_dtc",
+      "PFY": "xspress3mini_roi1_dtc",
+      "I0": [
+        "b107a_em_03_ch2",
+        "b107a_em_04_ch2",
+        "Pt_No"
+      ],
+      "Energy": [
+        "pcap_energy_av",
+        "mono_traj_energy",
+        "photon energy",
+        "energy",
+        "x"
+      ]
+    },
+    "test": {
+      "TEY": "b107a_em_03_ch1",
+      "PEY": "b107a_em_03_ch3",
+      "I0": [
+        "b107a_em_03_ch4"
+      ],
+      "Energy": [
+        "pcap_energy_av"
+      ]
+    },
+    "FlexPES-B": {
+      "TEY": "b107a_em_04_ch1",
+      "I0": [
+        "b107a_em_04_ch2",
+        "Pt_No"
+      ],
+      "Energy": [
+        "pcap_energy_av",
+        "mono_traj_energy",
+        "photon energy",
+        "energy",
+        "x"
+      ]
+    }
+  }
+}

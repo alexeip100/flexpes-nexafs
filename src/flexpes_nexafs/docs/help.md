@@ -7,10 +7,20 @@ beamline (MAX IV Laboratory). It supports pre-processing, visualization,
 and export of raw and processed data.
 
 ## File Controls (Top Left Panel)
-- **Open HDF5 File:** Load one or more HDF5 files containing NEXAFS data.
-- **Close all:** Close all currently opened files (but keep the application running). To close individual h5 files: select a file and either "Delete" or right-click and "Close".
-- **Clear all:** Remove all loaded data and reset the interface.
+- **Open HDF5:** Load one or more HDF5 files containing NEXAFS data.
+- **Close all:** Close all currently opened files (files are removed from the tree and plots).
+- **Clear all:** Remove all loaded data and reset the interface (raw/processed/plotted).
 - **Help:** Open the **Usage** and **About** dialogs.
+- **Setup channels / Active beamline:** Configure how the app interprets detector channels and axes in the HDF5 file
+  (TEY/PEY/TFY/PFY, **I₀**, and **photon energy**).
+  - Click **Setup channels** → **OK** to open the setup dialog.
+  - Select an existing beamline profile and click **Use selected** to make it active (no saving needed).
+  - Edit mappings and click **Save changes** to store them.
+    You will be asked for confirmation before overwriting an existing profile such as **FlexPES-A**.
+  - **I₀** and **Energy** accept a comma-separated list of candidate dataset names/paths; the **first** candidate is treated
+    as the preferred default (fallback candidates are tried if the first one is not found).
+  - Click **Show config file location** to see where the JSON mapping file is stored on disk.
+
 
 ## File Tree Panel
 Shows the hierarchical structure of loaded HDF5 files.
@@ -19,6 +29,28 @@ Expand groups to view datasets. Tick checkboxes on **1-D datasets**
 from the plots.
 
 ---
+
+## Setup channels (beamline profiles)
+The app uses a **beamline profile** to translate canonical roles (TEY, PEY, TFY, PFY, I₀, Energy) into the dataset names
+that exist in your HDF5 files.
+
+- **Active beamline** (shown next to the Setup channels button) controls:
+  - the **All TEY/PEY/TFY/PFY** convenience checkboxes in the Raw Data tab (they use the configured channel substrings), and
+  - the default **I₀** choice for normalization and the **Energy** dataset lookup.
+- The profile mappings are stored in a JSON file (`channel_mappings.json`). You can keep several profiles (different beamlines),
+  switch between them, and edit them inside the app.
+- In the Setup dialog:
+  - **Use selected** activates the chosen existing profile and closes the dialog.
+  - **Save changes** saves the table values into the currently shown profile name (with an overwrite warning for existing profiles).
+    To avoid accidental edits, create a new profile name and save under that name when you want a variant.
+  - **Delete** removes the selected profile (protected profiles may be blocked).
+  - **Show config file location** displays the exact JSON file path (and lets you copy/open it).
+
+**I₀ / Energy candidate lists**
+- You can enter multiple candidates separated by commas.
+- The app tries candidates in order; the **first** is treated as the preferred default.
+- Keeping a generic fallback like `x` at the end is fine if your files sometimes lack a real photon-energy dataset.
+
 
 ## Tabs (Right Panel):
 
@@ -69,12 +101,12 @@ from the plots.
 
 ### Top Controls (normalization, summing, export)
 
-- **Normalize by I₀?** *(checkbox + “Set I₀ channel” combobox)*  
+- **Normalize by I₀?** *(checkbox + “Choose I₀” combobox)*  
   When checked, each raw spectrum is divided by the chosen I₀ / monitor
   channel from the same entry. This corrects for intensity fluctuations
   between scans before any background subtraction or post-normalization.
 
-- **Set I₀ channel:**  
+- **Choose I₀:**  
   Choose which dataset within the entry should be used as I₀. Only used
   when **Normalize by I₀?** is checked.
 
@@ -86,23 +118,39 @@ from the plots.
 
 
 - **Group BG:** *(checkbox)*
-  Enabled when **two or more** spectra are selected **and** **Choose BG** is set to **Automatic**.
-  When checked, Automatic BG is applied in a *group-consistent* way so you can background-subtract and **Pass** the
-  full selection to **Plotted Data** in one step.
+  Becomes **checkable** as soon as **two or more** spectra are selected (it is **not** enabled by default — the user must
+  actively check it).
 
-  **Background model used in group mode (Automatic BG):**
-  - Each spectrum starts from its *own* **Automatic BG** (a low-degree polynomial fitted to the pre-edge, with the same
+  When **Group BG** is checked, the GUI enters *group background* mode and automatically enforces the settings required
+  for consistent processing of multiple spectra:
+
+  - **Choose BG** is set to **Auto** *(and locked while Group BG stays checked)*.
+  - **Post-normalization** is set to **Area** *(and locked while Group BG stays checked)*.
+  - **Subtract BG** is checked by default, but **remains user-togglable** so you can visually inspect whether the suggested
+    background looks reasonable:
+      - **Subtract BG ON:** show background-subtracted (Area-normalized) spectra.
+      - **Subtract BG OFF:** show the **unsubtracted** spectra with their **individual fitted backgrounds**.
+
+  If you uncheck **Group BG**, your previous single-spectrum BG / normalization settings are restored. If the current
+  selection drops below two spectra, **Group BG** is automatically turned off and disabled.
+
+  **Passing to Plotted Data:** When Group BG is active, the **Pass** operation carries over the enforced **Area**
+  normalization and group-consistent background adjustment, so the curves in **Plotted Data** match what you see in the
+  **Processed Data** panel.
+
+  **Background model used in Group BG (Auto BG):**
+  - Each spectrum starts from its *own* **Auto BG** (a low-degree polynomial fitted to the pre-edge, with the same
     end-slope constraint as in single-spectrum mode).
-  - If post-normalization is **Area**, the background is then adjusted per spectrum by adding a small **affine term**
-    *(constant + global linear term)* so that (i) the **pre-edge baseline after subtraction is 0**, and (ii) the
-    **absorption jump after Area normalization** is consistent across the selected spectra.
+  - The background is then adjusted per spectrum by adding a small **affine term** *(constant + global linear term)* so that
+    (i) the **pre-edge baseline after subtraction is 0**, and (ii) the **absorption jump after Area normalization** is
+    consistent across the selected spectra.
 
-- **Match pre-edge slope:** *(checkbox)*
+- **Match pre-edge:** *(checkbox)*
   Available only when **Group BG** is active. When enabled, the group mode additionally adjusts the
   backgrounds so that the **pre-edge slope after BG subtraction** is consistent across the selected spectra
   (median target).
 
-  **Important:** With **Match pre-edge slope** enabled, the final background is **no longer a single pure polynomial**.
+  **Important:** With **Match pre-edge** enabled, the final background is **no longer a single pure polynomial**.
   Internally, the polynomial background is supplemented by a *localized pre-edge correction term* that is active in the
   pre-edge region and smoothly tapers to zero before the edge (so it does not distort the post-edge window). This extra
   degree of freedom makes it possible to align pre-edge slopes across a group while keeping the Area-normalized jump
@@ -119,9 +167,9 @@ from the plots.
 
 ### Bottom Controls (BG + post-normalization)
 
-- **Choose BG:** *(combobox: None / Automatic / Manual)*  
+- **Choose BG:** *(controls: None / Auto / Manual)*  
   - **None:** no background is fitted or subtracted.
-  - **Automatic:** polynomial background fit with an additional constraint
+  - **Auto:** polynomial background fit with an additional constraint
     so that the derivative at the end of the background matches the slope
     of the data (intended to mimic a smooth pre-edge baseline).
   - **Manual:** manual background mode. The application starts from an
@@ -152,7 +200,7 @@ from the plots.
 > available when there is a single effective main curve (one dataset visible, or multiple datasets combined via **Sum them up?**).
 > 
 > If several raw curves are visible and summing is disabled, BG/post-normalization are normally disabled — **except** when
-> BG mode is **Automatic** and **Group BG** is enabled.
+> BG mode is **Auto** and **Group BG** is enabled.
 > 
 > In that group mode, when **Subtract BG?** is **OFF**, BG curves are shown for all selected curves.
 > When **Subtract BG?** is **ON**, the view switches to the BG-subtracted curves, and the **Pass** button can pass
@@ -174,16 +222,11 @@ from the plots.
 
 ### Waterfall controls
 
-- **Waterfall mode:** *(combobox: None / Adaptive step / Uniform step)*  
-  - **None:** all curves are plotted on top of each other (no vertical shift).
-  - **Adaptive step:** curves are offset vertically based on their
-    amplitudes (adaptive spacing).
-  - **Uniform step:** curves are offset by a constant step size.
-
-- **Waterfall slider / numeric box:**  
-  When a Waterfall mode (other than “None”) is active and more than one
-  curve is plotted, the slider (and its paired numeric spin box) control
-  the magnitude of the vertical offset between curves.
+- **Waterfall:** *(checkbox)*  
+  - **Unchecked:** all curves are plotted on top of each other (no vertical shift).  
+  - **Checked:** applies a **Uniform step** vertical offset to the visible curves in the plotted list order.
+- **Step (slider + spinbox):** controls the size of the vertical offset. The value is a fraction of the global y-range of the
+  currently visible curves; larger values increase separation.
 
 ### Curve List (right side)
 
@@ -233,7 +276,7 @@ You can always reposition the legend (when shown) by dragging the legend box ins
 
 ### Grid
 
-- **Grid:** *(combobox: None / Coarse / Fine / Finest)*  
+- **Grid:** *(controls: None / Coarse / Fine / Finest)*  
   Applies major and minor grid lines to the Plotted Data axes:
   - **None:** no grid.
   - **Coarse:** major grid only (similar to the original single checkbox).
@@ -242,25 +285,29 @@ You can always reposition the legend (when shown) by dragging the legend box ins
 
 ### Reference Spectra Library
 
-- **Load reference:**  
-  Button that opens a dialog listing spectra from the reference library
-  file `library.h5`. Selected reference spectra are loaded into the
-  Plotted Data tab as additional curves and marked as “reference” in
-  their metadata (they cannot be re-added to the library from the curve list).
+The app ships with a small reference library file `library.h5`. You can add your own reference spectra and load them
+together with measured curves in the **Plotted Data** tab.
 
-> **Important:** The reference-data library functionality is currently in
-> an **early, experimental state**. The shipped `library.h5` content
-> should be regarded as **demonstration only** and may include placeholder,
-> test or otherwise unverified spectra. Treat any reference spectra as
-> illustrative examples, not authoritative reference data.
+- **Add to reference library:** click the **bookmark** button in the Plotted curve list to save a curve into `library.h5`
+  together with metadata (element, edge, compound, resolution, comments, etc.).
+- **Load reference:** opens a dialog listing spectra stored in `library.h5`.
+  - Select one or more references and click **OK** to load them into the Plotted Data plot.
+  - **Delete reference:** deletes the selected reference from `library.h5` after a confirmation prompt (**permanent**).
+
+> Tip: If you want a fully custom curated library, keep a backup copy of `library.h5` and/or version it with Git.
 
 ### Export / Clear
 
 - **Export/Import (Plotted):**  
   Click to open a menu:
   - **Export CSV:** export the curves currently shown in the Plotted Data tab as CSV.
+    - Column headers are derived from the **Legend** mode in Plotted Data:
+      - **Entry number** → headers are the entry numbers.
+      - **User-defined** → headers are the user-assigned curve names.
+    - The placeholder `<select curve name>` is **never** allowed in exported CSV headers.
+    - If required names are missing (e.g. user-defined names not set, or no entry numbers available), the export is blocked and a warning is shown.
   - **Import CSV:** load one or several previously exported CSV files into the Plotted Data plot.
 
-- **Clear Plotted Data:**  
+- **Clear Plotted:**  
   Remove all curves from the Plotted Data tab (but keep raw and processed
   data untouched).

@@ -121,3 +121,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Help -> Usage text is updated.
 - Help -> Usage dialog window appearance is improved: Content menu added, font size widget added, maximixation option added.
 
+
+## [2.2.0] – 2025-12-30
+
+### Fixed
+- Fixed a crash when selecting "Manual" background subtraction.
+
+### Changed
+- "Group BG" workflow is now more intuitive: the "Group BG" checkbox becomes available as soon as more than one curve is selected in the "Processed Data" tab.
+- Enabling "Group BG" automatically switches to "Auto" BG, enables "Subtract BG", and selects "Area" normalization; these settings remain fixed while "Group BG" is enabled (except "Subtract BG", which can be toggled to preview unsubtracted curves with individual backgrounds).
+- Simplified "Waterfall" in the "Plotted Data" tab: removed *Adaptive step* and kept only *Uniform step*; replaced the Waterfall mode combobox with a checkbox.
+- Minor UI text shortening and layout tweaks; "Help → Usage" updated accordingly.
+
+### Added
+- Added a bundled 'channel_mappings.json' with editable “beamline profiles” mapping canonical roles (TEY/PEY/TFY/PFY, I₀, Energy) to HDF5 dataset names; enables use with different beamlines.
+- Added a "Setup channels" button and an "Active beamline" indicator (default profile: "FlexPES-A"), including a dialog to create/select/edit/save profiles.
+- Added "Delete reference" in the “Load reference” dialog to permanently remove individual spectra from `library.h5` after confirmation.

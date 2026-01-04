@@ -6,19 +6,17 @@ This module contains the ProcessingMixin and a few small helper functions.
 from .data import lookup_energy
 
 # -----------------------------------------------------------------------------
-# Normalisation helper
+# Normalisation helper (module-level wrapper for backward compatibility)
 # -----------------------------------------------------------------------------
 def apply_normalization(viewer, abs_path, parent, y_data):
     """Apply I0 normalisation for a given spectrum.
 
-    Historically the codebase called a module-level ``processing.apply_normalization``.
-    In v2.x the actual implementation lives on the main window class as
-    ``HDF5Viewer._apply_normalization`` (defined in plotting.py). Some parts of the
-    code (e.g. multi-curve processing paths) still import and call the module-level
-    function.
+    Parts of the codebase call a module-level ``processing.apply_normalization``.
+    The actual implementation lives on the main window instance as
+    ``_apply_normalization`` (defined in plotting.py).
 
-    This thin wrapper keeps backwards compatibility by delegating to the instance
-    method if present, otherwise returning the input unchanged.
+    This wrapper delegates to that method if present, otherwise returns the
+    input unchanged.
     """
     try:
         fn = getattr(viewer, "_apply_normalization", None)
@@ -27,21 +25,14 @@ def apply_normalization(viewer, abs_path, parent, y_data):
     except Exception:
         pass
     return y_data
-import os
-import sys
-import time
-import csv
-import h5py
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 plt.ioff()
-from PyQt5.QtWidgets import (QApplication, QFileDialog, QTreeWidget, QTreeWidgetItem, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTabWidget, QCheckBox, QComboBox, QSpinBox, QMessageBox, QSizePolicy, QDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
+from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-
 
 def _proc_safe_post_normalize(viewer, x, y, mode):
     """Module-level wrapper used across the codebase for post-normalization.
@@ -134,38 +125,35 @@ class ProcessingMixin:
         return bg, p
 
     def recompute_waterfall_layout(self):
-        """(Re)apply Waterfall based on combobox mode and slider/spin."""
-        # Update controls state based on mode
-        mode = None
+        """(Re)apply Waterfall (Uniform step) based on the checkbox + slider/spin."""
+        enabled = False
         try:
-            mode = self.waterfall_mode_combo.currentText()
+            enabled = bool(getattr(self, 'waterfall_checkbox', None) and self.waterfall_checkbox.isChecked())
         except Exception:
-            mode = "None"
+            enabled = False
+
+        # Enable/disable controls
         try:
-            if mode == "Adaptive step":
-                self.waterfall_slider.setEnabled(True)
-                self.waterfall_spin.setEnabled(True)
-            elif mode == "Uniform step":
-                self.waterfall_slider.setEnabled(True)
-                self.waterfall_spin.setEnabled(True)
-            else:
-                self.waterfall_slider.setEnabled(False)
-                self.waterfall_spin.setEnabled(False)
+            self.waterfall_slider.setEnabled(enabled)
+            self.waterfall_spin.setEnabled(enabled)
         except Exception:
             pass
-        if mode == "None":
+
+        if not enabled:
             try:
                 self.restore_original_line_data()
                 self.rescale_plotted_axes()
+                if hasattr(self, 'canvas_plotted'):
+                    self.canvas_plotted.draw()
             except Exception:
                 pass
             return
-        # Delegate to apply_waterfall_shift which now checks the mode
+
+        # Delegate to apply_waterfall_shift (Uniform step only)
         try:
             self.apply_waterfall_shift()
         except Exception as ex:
-            print("apply_waterfall_shift error:", ex)
-
+            print('apply_waterfall_shift error:', ex)
     def reset_manual_mode(self):
         self.manual_mode = False
         self.manual_points = []
@@ -185,13 +173,13 @@ class ProcessingMixin:
             try:
                 xs = [pt["x"] for pt in self.manual_points]
                 ys = [pt["y"] for pt in self.manual_points]
-                background, _ = _proc_robust_polyfit_on_normalized(self, xs, ys, deg, main_x)
+                background, _ = self._proc_robust_polyfit_on_normalized(xs, ys, deg, main_x)
                 background[0] = main_y[0]
             except Exception as ex:
                 print("Error in manual background computation:", ex)
                 background = np.zeros_like(main_y)
             return background
-        elif mode == "Automatic":
+        elif str(mode) in ("Automatic", "Auto"):
             return self._apply_automatic_bg_new( main_x, main_y, do_plot=False)
         return np.zeros_like(main_y)
 
@@ -265,6 +253,16 @@ class ProcessingMixin:
 
     def _on_bg_subtract_toggled(self, state):
         """Enable/disable post‑normalisation combo and update plot."""
+        # In Group BG mode, post-normalisation is intentionally locked (Area) regardless of Subtract BG toggle.
+        # Keep the widget state managed by Group BG logic; only replot here.
+        try:
+            cb = getattr(self, "chk_group_bg", None)
+            if cb is not None and cb.isEnabled() and cb.isChecked():
+                self.update_plot_processed()
+                return
+        except Exception:
+            pass
+
         self.combo_post_norm.setEnabled(state == Qt.Checked)
         self.update_plot_processed()
 
@@ -298,7 +296,7 @@ class ProcessingMixin:
             d = 2
         xs = [pt["x"] for pt in self.manual_points]
         ys = [pt["y"] for pt in self.manual_points]
-        background, coeffs = _proc_robust_polyfit_on_normalized(self, xs, ys, d, main_x)
+        background, coeffs = self._proc_robust_polyfit_on_normalized(xs, ys, d, main_x)
         if np.isfinite(main_y[0]):
             background[0] = main_y[0]
         self.manual_poly = coeffs
@@ -335,14 +333,14 @@ class ProcessingMixin:
         self.proc_ax.clear()
         self.manual_bg_line = None
         # compute background
-        if mode == "Automatic":
+        if str(mode) in ("Automatic", "Auto"):
             background = self._apply_automatic_bg_new( main_x, main_y, do_plot=False)
         elif mode == "Manual" and self.manual_points:
             try:
                 d = int(self.combo_poly.currentText())
                 xs = [pt["x"] for pt in self.manual_points]
                 ys = [pt["y"] for pt in self.manual_points]
-                background, _ = _proc_robust_polyfit_on_normalized(self, xs, ys, d, main_x)
+                background, _ = self._proc_robust_polyfit_on_normalized(xs, ys, d, main_x)
                 background[0] = main_y[0]
             except Exception:
                 background = np.zeros_like(main_y)
@@ -490,7 +488,7 @@ class ProcessingMixin:
             if getattr(self, "proc_ax", None) is None:
                 return
             combo = getattr(self, "combo_bg", None)
-            if combo is None or combo.currentText() != "Automatic":
+            if combo is None or combo.currentText() not in ("Automatic", "Auto"):
                 return
             ln = getattr(self, "proc_preedge_line", None)
             if ln is None:
@@ -578,7 +576,7 @@ class ProcessingMixin:
                     x_min, x_max = 0.0, 1.0
                 x_grid = np.linspace(x_min, x_max, 512)
             try:
-                bg, coeffs = _proc_robust_polyfit_on_normalized(self, xs, ys, deg, x_grid)
+                bg, coeffs = self._proc_robust_polyfit_on_normalized(xs, ys, deg, x_grid)
                 self.manual_poly = coeffs
             except Exception:
                 try: self.proc_ax.figure.canvas.draw_idle()

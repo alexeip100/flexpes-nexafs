@@ -416,7 +416,7 @@ class LibraryMixin:
             )
             return
 
-        dlg = LibraryBrowserDialog(entries, parent=self)
+        dlg = LibraryBrowserDialog(entries, library_path=path, parent=self)
         if dlg.exec_() != dlg.Accepted:
             return
 

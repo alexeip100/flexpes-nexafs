@@ -2,10 +2,6 @@ from flexpes_nexafs.utils.sorting import parse_entry_number
 from .data import lookup_energy
 # Auto-generated/maintained PlottingMixin (post-split)
 
-import os
-import sys
-import time
-import csv
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
@@ -363,63 +359,62 @@ class PlottingMixin:
         self.recompute_waterfall_layout()
 
     def apply_waterfall_shift(self):
-        """Apply/update Waterfall offsets according to selected mode."""
+        """Apply/update Waterfall offsets (Uniform step only)."""
         if not getattr(self, "plotted_lines", None):
             return
 
+        enabled = False
         try:
-            mode = self.waterfall_mode_combo.currentText()
+            enabled = bool(getattr(self, "waterfall_checkbox", None) and self.waterfall_checkbox.isChecked())
         except Exception:
-            mode = "Adaptive step" if getattr(self, "waterfall_checkbox", None) and self.waterfall_checkbox.isChecked() else "None"
+            enabled = False
 
-        # Restore originals first
+        # Restore originals first so Waterfall is always applied on clean data
         try:
             self.restore_original_line_data()
         except Exception:
             pass
 
-        # Build ordered visible keys
+        # Build ordered visible keys (respect the plotted list order if present)
         plotted_keys_in_order = []
         if hasattr(self, "plotted_list"):
-            for i in range(self.plotted_list.count()):
-                item = self.plotted_list.item(i)
-                widget = self.plotted_list.itemWidget(item)
-                if widget:
-                    key = getattr(widget, "key", None)
-                    line = self.plotted_lines.get(key) if key else None
+            try:
+                for i in range(self.plotted_list.count()):
+                    item = self.plotted_list.item(i)
+                    widget = self.plotted_list.itemWidget(item)
+                    if widget:
+                        key = getattr(widget, "key", None)
+                        line = self.plotted_lines.get(key) if key else None
+                        if line is not None and line.get_visible():
+                            plotted_keys_in_order.append(key)
+            except Exception:
+                plotted_keys_in_order = []
+        if not plotted_keys_in_order:
+            try:
+                for k, line in self.plotted_lines.items():
                     if line is not None and line.get_visible():
-                        plotted_keys_in_order.append(key)
+                        plotted_keys_in_order.append(k)
+            except Exception:
+                plotted_keys_in_order = []
 
-        if not plotted_keys_in_order or mode == "None":
-            self.rescale_plotted_axes()
+        if (not plotted_keys_in_order) or (not enabled):
+            # No Waterfall: just rescale and redraw
+            try:
+                self.rescale_plotted_axes()
+                if hasattr(self, "canvas_plotted"):
+                    self.canvas_plotted.draw()
+            except Exception:
+                pass
             return
 
-        if mode == "Adaptive step":
-            alpha = float(self.waterfall_spin.value())
-            prev_max = None
-            for key in plotted_keys_in_order:
-                line = self.plotted_lines[key]
-                xdata = np.asarray(line.get_xdata())
-                ydata = np.asarray(line.get_ydata(), dtype=float)
-                if xdata.size < 1 or ydata.size < 1:
-                    continue
-                if prev_max is None:
-                    mfin0 = np.isfinite(ydata)
-                    prev_max = float(np.max(ydata[mfin0])) if np.any(mfin0) else 0.0
-                    continue
-                mfin1 = np.isfinite(ydata)
-                y0 = float(ydata[mfin1][0]) if np.any(mfin1) else 0.0
-                shift_full = (prev_max * 1.02) - y0
-                shift_final = alpha * shift_full
-                new_y = ydata + shift_final
-                line.set_ydata(new_y)
-                mfin2 = np.isfinite(new_y)
-                if np.any(mfin2):
-                    prev_max = float(np.max(new_y[mfin2]))
+        # Uniform step parameter (0..1) multiplied by global y-range
+        try:
+            k = float(self.waterfall_spin.value())
+        except Exception:
+            k = 0.0
 
-        elif mode == "Uniform step":
-            k = float(self.waterfall_spin.value())  # 0..1
-            # Compute global y-range from restored originals
+        # Compute global y-range from restored originals
+        try:
             ymins, ymaxs = [], []
             for key in plotted_keys_in_order:
                 line = self.plotted_lines[key]
@@ -432,20 +427,27 @@ class PlottingMixin:
                 self.rescale_plotted_axes()
                 return
             global_range = max(ymaxs) - min(ymins)
-            if not np.isfinite(global_range) or global_range <= 1e-15:
-                self.rescale_plotted_axes()
-                return
-            delta = k * global_range
+            if not np.isfinite(global_range) or global_range <= 0:
+                global_range = 1.0
+            step = k * global_range
+        except Exception:
+            step = 0.0
+
+        # Apply offsets in order
+        try:
             for idx, key in enumerate(plotted_keys_in_order):
-                if idx == 0:
-                    continue
                 line = self.plotted_lines[key]
                 y = np.asarray(line.get_ydata(), dtype=float)
-                line.set_ydata(y + idx * delta)
+                line.set_ydata(y + idx * step)
+        except Exception:
+            pass
 
-        # Finally rescale/redraw
-        self.rescale_plotted_axes()
-
+        try:
+            self.rescale_plotted_axes()
+            if hasattr(self, "canvas_plotted"):
+                self.canvas_plotted.draw()
+        except Exception:
+            pass
     def restore_original_line_data(self):
         """Restore each line to the unshifted data we stored earlier."""
         for key, line in getattr(self, "plotted_lines", {}).items():
@@ -479,7 +481,7 @@ class PlottingMixin:
                 try:
                     mode = str(getattr(self, "combo_bg").currentText()) if hasattr(self, "combo_bg") else ""
                     cb = getattr(self, "chk_group_bg", None)
-                    if (len(visible_keys) >= 2 and mode == "Automatic" and cb is not None and cb.isEnabled() and cb.isChecked()
+                    if (len(visible_keys) >= 2 and str(mode) in ("Automatic", "Auto") and cb is not None and cb.isEnabled() and cb.isChecked()
                         and getattr(self, "chk_show_without_bg", None) is not None and self.chk_show_without_bg.isChecked()
                         and (not self.chk_sum.isChecked())):
                         allow_multi = True
@@ -503,8 +505,12 @@ class PlottingMixin:
                 # Post-normalization mode
                 norm_mode = "None"
                 try:
-                    if hasattr(self, "combo_post_norm") and self.combo_post_norm.isEnabled():
-                        norm_mode = str(self.combo_post_norm.currentText())
+                    if hasattr(self, "combo_post_norm"):
+                        # In Group BG mode the combobox is disabled but still reflects the enforced mode ("Area").
+                        if (getattr(self, "chk_group_bg", None) is not None and self.chk_group_bg.isChecked()):
+                            norm_mode = str(self.combo_post_norm.currentText())
+                        elif self.combo_post_norm.isEnabled():
+                            norm_mode = str(self.combo_post_norm.currentText())
                 except Exception:
                     norm_mode = "None"
 
@@ -1222,7 +1228,10 @@ class PlottingMixin:
         self.original_line_data.clear()  # Waterfall originals
 
         # Reset Waterfall controls
-        self.waterfall_mode_combo.setCurrentIndex(0)
+        try:
+            self.waterfall_checkbox.setChecked(False)
+        except Exception:
+            pass
         self.waterfall_slider.setValue(0)
         self.waterfall_spin.setValue(0.00)
 
@@ -1248,11 +1257,12 @@ class PlottingMixin:
         except Exception:
             pass
 
-        # Reset Grid option to 'None'
+        # Re-apply grid mode after clearing (keep user selection)
         try:
-            if hasattr(self, "grid_mode_combo"):
-                self.grid_mode_combo.setCurrentText("None")
-            self._apply_grid_mode("None")
+            mode = "None"
+            if hasattr(self, "grid_mode_combo") and self.grid_mode_combo is not None:
+                mode = str(self.grid_mode_combo.currentText())
+            self._apply_grid_mode(mode)
         except Exception:
             pass
 
@@ -1352,11 +1362,56 @@ class PlottingMixin:
                 text=old_text,
             )
             if ok and new_text:
-                for key, line in self.plotted_lines.items():
-                    current_label = self.custom_labels.get(key)
-                    if (current_label is None and old_text == "<select curve name>") or (current_label == old_text):
-                        self.custom_labels[key] = new_text
-                        break
+                # Map the clicked legend text to the corresponding plotted curve.
+                # This avoids ambiguity when multiple curves share the same placeholder name.
+                key_to_rename = None
+                try:
+                    idx_text = texts.index(artist)
+                except Exception:
+                    idx_text = None
+
+                handle = None
+                if idx_text is not None:
+                    # Prefer legend lines (they correspond 1:1 with legend texts)
+                    try:
+                        leg_lines = list(leg.get_lines() or [])
+                        if 0 <= idx_text < len(leg_lines):
+                            handle = leg_lines[idx_text]
+                    except Exception:
+                        handle = None
+
+                if handle is not None:
+                    try:
+                        for k, ln in getattr(self, "plotted_lines", {}).items():
+                            if ln is handle:
+                                key_to_rename = k
+                                break
+                    except Exception:
+                        key_to_rename = None
+
+                # Fallback: old text matching (legacy behavior)
+                if key_to_rename is None:
+                    try:
+                        for k, ln in getattr(self, "plotted_lines", {}).items():
+                            current_label = getattr(self, "custom_labels", {}).get(k)
+                            if (current_label is None and old_text == "<select curve name>") or (current_label == old_text):
+                                key_to_rename = k
+                                break
+                    except Exception:
+                        key_to_rename = None
+
+                if key_to_rename is not None:
+                    try:
+                        self.custom_labels[key_to_rename] = str(new_text)
+                    except Exception:
+                        pass
+                    try:
+                        ln = getattr(self, "plotted_lines", {}).get(key_to_rename)
+                        if ln is not None:
+                            ln.set_label(str(new_text))
+                    except Exception:
+                        pass
+
                 self.update_legend()
 
 
@@ -1495,25 +1550,63 @@ class PlottingMixin:
                 self._plotted_legend_bbox = saved_bbox
 
             handles, labels = [], []
+            entry_mode = mode in ("entry number", "entry", "entry-number", "entry_id", "entry id", "id")
             for key in order:
                 line = getattr(self, "plotted_lines", {}).get(key)
-                if line is not None and line.get_visible():
-                    handles.append(line)
-                    lbl = None
-                    if mode in ("entry number", "entry", "entry-number", "entry_id", "entry id", "id"):
+                if line is None or (hasattr(line, "get_visible") and not line.get_visible()):
+                    continue
+
+                handles.append(line)
+
+                lbl = None
+                if entry_mode:
+                    # IMPORTANT: Do NOT overwrite the underlying Line2D label in 'Entry number' mode.
+                    # We only change what is displayed in the legend.
+                    try:
+                        lbl = self._legend_label_from_entry_number(key, line)
+                    except Exception:
+                        lbl = None
+                else:
+                    # User-defined mode: use stored custom labels when present,
+                    # otherwise show the placeholder.
+                    try:
+                        lbl = getattr(self, "custom_labels", {}).get(key)
+                    except Exception:
+                        lbl = None
+
+                    if not lbl:
                         try:
-                            lbl = self._legend_label_from_entry_number(key, line)
+                            current = line.get_label()
                         except Exception:
-                            lbl = None
-                    else:
+                            current = None
+
+                        # If the label got corrupted earlier (e.g. overwritten by entry number),
+                        # restore to placeholder unless the user explicitly set a label.
                         try:
-                            lbl = getattr(self, "custom_labels", {}).get(key)
+                            entry_lbl = self._legend_label_from_entry_number(key, line)
                         except Exception:
-                            lbl = None
-                        if not lbl:
-                            lbl = line.get_label() or "<select curve name>"
-                    line.set_label(lbl)
-                    labels.append(lbl)
+                            entry_lbl = None
+
+                        if (not current) or (str(current).strip() == ""):
+                            lbl = "<select curve name>"
+                        else:
+                            s = str(current).strip()
+                            # Treat as corrupted if it looks like a pure entry number and matches what we'd derive.
+                            if entry_lbl and s == str(entry_lbl).strip() and s.isdigit():
+                                lbl = "<select curve name>"
+                            else:
+                                lbl = s
+
+                    # In user-defined mode we keep the underlying label in sync,
+                    # because other parts of the UI rely on it.
+                    try:
+                        line.set_label(lbl)
+                    except Exception:
+                        pass
+
+                if not lbl:
+                    lbl = "<select curve name>"
+                labels.append(lbl)
 
             if not hasattr(self, "plotted_ax"):
                 # Nothing to draw the legend on
@@ -1587,7 +1680,7 @@ class PlottingMixin:
             try:
                 if (not cond_sum) and vc >= 2:
                     mode = str(getattr(self, "combo_bg").currentText()) if hasattr(self, "combo_bg") else ""
-                    if mode == "Automatic" and getattr(self, "chk_show_without_bg", None) is not None and self.chk_show_without_bg.isChecked():
+                    if str(mode) in ("Automatic", "Auto") and getattr(self, "chk_show_without_bg", None) is not None and self.chk_show_without_bg.isChecked():
                         cb = getattr(self, "chk_group_bg", None)
                         if cb is not None and cb.isEnabled() and cb.isChecked():
                             group_cond = True
@@ -1600,15 +1693,233 @@ class PlottingMixin:
             pass
 
     def _on_group_bg_checkbox_toggled(self, state):
-        """Remember user choice for group background and update the processed plot."""
+        """Handle Group BG toggle.
+
+        New UX (v2.1.1+):
+        - The checkbox becomes *checkable* as soon as >=2 curves are selected.
+        - When checked by the user, Group BG *forces* the required math settings:
+          BG mode = Automatic, Subtract BG = ON, Post-normalization = Area.
+        - While Group BG stays checked, BG mode and Area post-normalization stay fixed
+          (controls are locked).
+        """
+        checked = False
         try:
-            self._group_bg_user_choice = (state == Qt.Checked)
+            checked = (state == Qt.Checked)
+        except Exception:
+            checked = bool(state)
+
+        # Remember user's choice (only meaningful while in multi-selection)
+        try:
+            self._group_bg_user_choice = bool(checked)
         except Exception:
             pass
+
+        # Enter/exit Group BG mode (force/restore UI + processing settings)
+        try:
+            self._set_group_bg_mode(bool(checked))
+        except Exception:
+            # If anything goes wrong, still attempt a redraw.
+            pass
+
         try:
             self.update_plot_processed()
         except Exception:
             pass
+
+    def _set_group_bg_mode(self, enabled: bool):
+        """Force (or restore) processing controls for Group BG mode.
+
+        When enabled, the required settings are applied and controls are locked:
+        - BG mode: Automatic
+        - Subtract BG: checked
+        - Post-normalization: Area
+
+        When disabled, previously stored user settings (if available) are restored.
+        """
+        # Lazy-import Qt safely (already imported at module top in most builds)
+        try:
+            _QtChecked = Qt.Checked
+        except Exception:
+            _QtChecked = 2
+
+        cb = getattr(self, "chk_group_bg", None)
+        if cb is None:
+            return
+
+        if enabled:
+            # Save previous settings once
+            if getattr(self, "_group_bg_prev_settings", None) is None:
+                prev = {}
+                try:
+                    prev["bg_text"] = str(self.combo_bg.currentText())
+                    prev["bg_enabled"] = bool(self.combo_bg.isEnabled())
+                except Exception:
+                    prev["bg_text"] = "None"
+                    prev["bg_enabled"] = True
+                try:
+                    prev["subtract"] = bool(self.chk_show_without_bg.isChecked())
+                    prev["subtract_enabled"] = bool(self.chk_show_without_bg.isEnabled())
+                except Exception:
+                    prev["subtract"] = False
+                    prev["subtract_enabled"] = True
+                try:
+                    prev["post_norm_text"] = str(self.combo_post_norm.currentText())
+                    prev["post_norm_enabled"] = bool(self.combo_post_norm.isEnabled())
+                except Exception:
+                    prev["post_norm_text"] = "None"
+                    prev["post_norm_enabled"] = False
+                self._group_bg_prev_settings = prev
+
+            # Allow the user to toggle "Subtract BG" for visual inspection in Group BG mode.
+            # We only auto-check it the first time Group BG is enabled; afterwards we preserve user choice.
+            try:
+                first_enable = not bool(getattr(self, "_group_bg_mode_active", False))
+                self._group_bg_mode_active = True
+            except Exception:
+                first_enable = True
+
+            # Force required settings without triggering cascaded updates
+            try:
+                self.combo_bg.blockSignals(True)
+                self.chk_show_without_bg.blockSignals(True)
+                self.combo_post_norm.blockSignals(True)
+            except Exception:
+                pass
+            try:
+                # BG mode -> Automatic
+                try:
+                    idx = int(self.combo_bg.findText("Auto"))
+                    if idx >= 0:
+                        self.combo_bg.setCurrentIndex(idx)
+                    else:
+                        self.combo_bg.setCurrentText("Auto")
+                except Exception:
+                    pass
+
+                # Subtract BG -> ON (only on first enable)
+                if "first_enable" in locals() and first_enable:
+                    try:
+                        self.chk_show_without_bg.setChecked(True)
+                    except Exception:
+                        pass
+
+                # Post-norm -> Area
+                try:
+                    idxn = int(self.combo_post_norm.findText("Area"))
+                    if idxn >= 0:
+                        self.combo_post_norm.setCurrentIndex(idxn)
+                    else:
+                        self.combo_post_norm.setCurrentText("Area")
+                except Exception:
+                    pass
+            finally:
+                try:
+                    self.combo_bg.blockSignals(False)
+                    self.chk_show_without_bg.blockSignals(False)
+                    self.combo_post_norm.blockSignals(False)
+                except Exception:
+                    pass
+
+            # Lock controls that must stay fixed in Group BG mode
+            try:
+                self.combo_bg.setEnabled(False)
+            except Exception:
+                pass
+            try:
+                self.chk_show_without_bg.setEnabled(True)  # keep enabled for visual inspection in Group BG mode
+            except Exception:
+                pass
+            try:
+                self.combo_post_norm.setEnabled(False)
+            except Exception:
+                pass
+
+        else:
+            # Restore previous settings (if we have them)
+            prev = getattr(self, "_group_bg_prev_settings", None)
+
+            # Unlock first, then restore values, then restore enabled states.
+            try:
+                self.combo_bg.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self.chk_show_without_bg.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self.combo_post_norm.setEnabled(True)
+            except Exception:
+                pass
+
+            if prev:
+                try:
+                    self.combo_bg.blockSignals(True)
+                    self.chk_show_without_bg.blockSignals(True)
+                    self.combo_post_norm.blockSignals(True)
+                except Exception:
+                    pass
+                try:
+                    # BG mode
+                    try:
+                        txt = str(prev.get("bg_text", "None"))
+                        idx = int(self.combo_bg.findText(txt))
+                        if idx >= 0:
+                            self.combo_bg.setCurrentIndex(idx)
+                        else:
+                            self.combo_bg.setCurrentText(txt)
+                    except Exception:
+                        pass
+
+                    # Subtract BG
+                    try:
+                        self.chk_show_without_bg.setChecked(bool(prev.get("subtract", False)))
+                    except Exception:
+                        pass
+
+                    # Post-norm
+                    try:
+                        txtn = str(prev.get("post_norm_text", "None"))
+                        idxn = int(self.combo_post_norm.findText(txtn))
+                        if idxn >= 0:
+                            self.combo_post_norm.setCurrentIndex(idxn)
+                        else:
+                            self.combo_post_norm.setCurrentText(txtn)
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        self.combo_bg.blockSignals(False)
+                        self.chk_show_without_bg.blockSignals(False)
+                        self.combo_post_norm.blockSignals(False)
+                    except Exception:
+                        pass
+
+                # Restore enabled states (post-norm enable depends on subtract in normal mode,
+                # so we restore exactly what the user had before entering Group BG).
+                try:
+                    self.combo_bg.setEnabled(bool(prev.get("bg_enabled", True)))
+                except Exception:
+                    pass
+                try:
+                    self.chk_show_without_bg.setEnabled(bool(prev.get("subtract_enabled", True)))
+                except Exception:
+                    pass
+                try:
+                    self.combo_post_norm.setEnabled(bool(prev.get("post_norm_enabled", False)))
+                except Exception:
+                    pass
+
+            # Mark Group BG as inactive so Subtract BG can be user-toggled on next activation.
+            try:
+                self._group_bg_mode_active = False
+            except Exception:
+                pass
+
+            try:
+                self._group_bg_prev_settings = None
+            except Exception:
+                self._group_bg_prev_settings = None
 
     def _on_group_bg_slope_checkbox_toggled(self, state):
         """Remember user choice for group pre-edge slope matching and update the processed plot."""
@@ -1622,57 +1933,75 @@ class PlottingMixin:
             pass
 
     def _update_group_bg_checkbox_state(self, visible_curves: int, mode_text: str):
-        """Enable/disable and auto-default the 'group background' checkbox.
+        """Enable/disable the Group BG checkbox.
 
-        Design goals:
-        - Only usable when BG mode is Automatic AND >=2 curves are selected.
-        - Default to checked when selection transitions from 1 -> 2+.
-        - If user manually toggles it while in 2+ mode, keep their choice until selection drops back to 0/1.
+        UX goals (2025-12):
+        - The checkbox is *checkable* whenever >=2 curves are selected, regardless of current BG/Norm settings.
+        - It is NOT auto-checked. Group BG must be an explicit user choice.
+        - When selection drops back to 0/1, Group BG is turned off and the checkbox is disabled.
+
+        Math logic is enforced elsewhere:
+        - When the user checks Group BG, we force: Automatic BG + Subtract BG + Area normalization
+          and lock these controls while Group BG stays checked.
         """
         cb = getattr(self, "chk_group_bg", None)
         if cb is None:
             return
-        try:
-            mode = str(mode_text or "")
-        except Exception:
-            mode = ""
-
-        # Initialize state trackers
+        # Track transitions into/out of multi-selection
         prev_multi = bool(getattr(self, "_group_bg_prev_multi", False))
-        user_choice = getattr(self, "_group_bg_user_choice", None)
+        multi_now = (int(visible_curves) >= 2)
 
-        multi_now = (visible_curves >= 2)
-        usable_now = multi_now and (mode == "Automatic")
-
-        # Reset remembered manual choice when leaving multi-selection
         if not multi_now:
-            user_choice = None
+            # Leaving multi-selection: ensure we exit Group BG mode cleanly.
+            try:
+                if cb.isChecked():
+                    # Avoid recursion via the checkbox signal.
+                    try:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                    finally:
+                        try:
+                            cb.blockSignals(False)
+                        except Exception:
+                            pass
+                    try:
+                        self._set_group_bg_mode(False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Reset remembered choice
             try:
                 setattr(self, "_group_bg_user_choice", None)
             except Exception:
                 pass
 
-        # Apply UI state without firing the user-choice handler
-        try:
-            cb.blockSignals(True)
-            cb.setEnabled(bool(usable_now))
-            if not usable_now:
-                cb.setChecked(False)
-            else:
-                # Default to checked when entering multi-selection (first time)
-                if (not prev_multi) and multi_now and user_choice is None:
-                    cb.setChecked(True)
-                    setattr(self, "_group_bg_user_choice", True)
-                elif user_choice is not None:
-                    cb.setChecked(bool(user_choice))
-                else:
-                    # No remembered choice but already in multi mode: keep current checkbox state.
-                    pass
-        finally:
             try:
-                cb.blockSignals(False)
+                cb.setEnabled(False)
             except Exception:
                 pass
+        else:
+            # Entering / staying in multi-selection: checkbox is always available.
+            try:
+                cb.setEnabled(True)
+            except Exception:
+                pass
+
+            # Do NOT auto-check when transitioning from 1 -> 2+. Keep unchecked unless the user ticks it.
+            if (not prev_multi) and multi_now:
+                try:
+                    cb.blockSignals(True)
+                    cb.setChecked(False)
+                finally:
+                    try:
+                        cb.blockSignals(False)
+                    except Exception:
+                        pass
+                try:
+                    setattr(self, "_group_bg_user_choice", False)
+                except Exception:
+                    pass
 
         try:
             setattr(self, "_group_bg_prev_multi", bool(multi_now))
@@ -1713,7 +2042,7 @@ class PlottingMixin:
         user_choice = getattr(self, "_group_bg_slope_user_choice", None)
 
         multi_now = (int(visible_curves) >= 2)
-        usable_now = multi_now and (mode == "Automatic") and group_ok
+        usable_now = multi_now and (str(mode) in ("Automatic", "Auto")) and group_ok
 
         if not multi_now:
             user_choice = None
@@ -1780,7 +2109,7 @@ class PlottingMixin:
 
         layout = QVBoxLayout(dlg)
 
-        # --- Controls row: font size + maximize toggle ---------------------------------
+        # --- Controls row: font size ---------------------------------
         controls_row = QHBoxLayout()
         controls_row.setContentsMargins(0, 0, 0, 0)
         controls_row.setSpacing(8)
@@ -1793,9 +2122,6 @@ class PlottingMixin:
         font_spin.setToolTip("Change the font size used in this help window.")
         controls_row.addWidget(font_spin)
         controls_row.addStretch(1)
-        btn_max = QPushButton("Maximize")
-        btn_max.setToolTip("Maximize or restore this window")
-        controls_row.addWidget(btn_max)
         layout.addLayout(controls_row)
 
         splitter = QSplitter(Qt.Horizontal, dlg)
@@ -1804,6 +2130,35 @@ class PlottingMixin:
         toc = QTreeWidget()
         toc.setHeaderHidden(True)
         toc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        # Make TOC items stand out (bold + blue)
+        # Styling for the table-of-contents (left) list
+        def _set_toc_style(px: int):
+            try:
+                px = int(px)
+            except Exception:
+                px = 14
+            # Keep TOC items blue + bold, and ensure selected items remain readable
+            # across light/dark themes.
+            try:
+                toc.setStyleSheet(
+                    "QTreeWidget {"
+                    f" font-size: {px}px;"
+                    " }"
+                    "QTreeWidget::item { color: #0066CC; font-weight: 700; }"
+                    "QTreeWidget::item:selected { color: palette(text); }"
+                )
+            except Exception:
+                pass
+            # Belt-and-suspenders: make sure the widget's font is bold as well.
+            try:
+                f = toc.font()
+                f.setBold(True)
+                toc.setFont(f)
+            except Exception:
+                pass
+
+        _set_toc_style(font_spin.value())
+
         toc.setMinimumWidth(200)
         toc.setMaximumWidth(320)
 
@@ -1858,25 +2213,11 @@ class PlottingMixin:
             except Exception:
                 pass
             try:
-                toc.setStyleSheet(f"font-size: {px}px;")
+                _set_toc_style(px)
             except Exception:
                 pass
 
         font_spin.valueChanged.connect(_apply_help_font)
-
-        # Maximize/restore button (in addition to the window's own maximize control).
-        def _toggle_maximize():
-            try:
-                if dlg.isMaximized():
-                    dlg.showNormal()
-                    btn_max.setText("Maximize")
-                else:
-                    dlg.showMaximized()
-                    btn_max.setText("Restore")
-            except Exception:
-                pass
-
-        btn_max.clicked.connect(_toggle_maximize)
 
         dlg.exec_()
 
@@ -1904,8 +2245,18 @@ class PlottingMixin:
         self.chk_normalize.setChecked(False)
         self.combo_norm.setEnabled(False)
 
-        for default in ["b107a_em_03_ch2", "b107a_em_04_ch2", "Pt_No"]:
-            idx = self.combo_norm.findText(default)
+        # Pick default I0 channel according to channel mapping (beamline profile).
+        defaults = ["b107a_em_03_ch2", "b107a_em_04_ch2", "Pt_No"]
+        try:
+            cc = getattr(self, "channel_config", None)
+            if cc is not None:
+                cands = cc.get_candidates("I0")
+                if cands:
+                    defaults = list(cands)
+        except Exception:
+            pass
+        for default in defaults:
+            idx = self.combo_norm.findText(str(default))
             if idx != -1:
                 self.combo_norm.setCurrentIndex(idx)
                 break
@@ -2490,12 +2841,24 @@ class PlottingMixin:
 
         if not items:
             return
+        # Choose a representative x-grid for the pre-edge marker and dragging.
+        # Prefer a common grid if available; otherwise fall back to the first spectrum's grid.
+        try:
+            # items[key] = (x_use, y_use, bg, hdf5_path)
+            _x_first = next(iter(items.values()))[0]
+            self._proc_last_x = np.asarray(_x_first, dtype=float)
+        except Exception:
+            pass
 
         # Optional marker: show pre-edge boundary if all curves share a common grid.
         try:
             x_common, _bgs = self._compute_group_auto_backgrounds(list(items.keys()), deg=deg, pre_edge_percent=pre)
             if x_common is not None:
-                self._proc_last_x = np.asarray(x_common)
+                try:
+                    if len(x_common) >= 2:
+                        self._proc_last_x = np.asarray(x_common, dtype=float)
+                except Exception:
+                    self._proc_last_x = np.asarray(x_common)
         except Exception:
             pass
 
@@ -2550,7 +2913,7 @@ class PlottingMixin:
                 line, = self.proc_ax.plot(x_use, yy, label=self.shorten_label(hdf5_path))
             else:
                 line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path))
-                self.proc_ax.plot(x_use, bg, linestyle="--", linewidth=1.2, alpha=0.65, label="_bg")
+                self.proc_ax.plot(x_use, bg, linestyle="--", linewidth=1.2, alpha=0.65, color=line.get_color(), label="_bg")
             try:
                 line.dataset_key = key
             except Exception:
@@ -2565,9 +2928,21 @@ class PlottingMixin:
         except Exception:
             pass
 
+        # If the user has enabled Group BG, enforce the required settings even if
+        # other UI flows (e.g. the multi-selection "no BG controls" view) had
+        # previously disabled those widgets.
+        try:
+            gcb = getattr(self, "chk_group_bg", None)
+            if gcb is not None and gcb.isEnabled() and gcb.isChecked():
+                self._set_group_bg_mode(True)
+                # Refresh local "mode" cache after forcing the combo.
+                mode = self.combo_bg.currentText() if hasattr(self, "combo_bg") else mode
+        except Exception:
+            pass
+
         group_active = False
         try:
-            if visible_curves > 1 and (not self.chk_sum.isChecked()) and str(mode) == "Automatic":
+            if visible_curves > 1 and (not self.chk_sum.isChecked()) and str(mode) in ("Automatic", "Auto"):
                 cb = getattr(self, "chk_group_bg", None)
                 if cb is not None and cb.isEnabled() and cb.isChecked():
                     group_active = True
@@ -2639,7 +3014,7 @@ class PlottingMixin:
         self.last_normalize_state = new_norm_state
         self.last_plot_len = new_len
 
-        if mode == "Automatic" and main_x is not None and main_y is not None:
+        if str(mode) in ("Automatic", "Auto") and main_x is not None and main_y is not None:
             self.spin_preedge.setEnabled(True)
             self._apply_automatic_bg_new(
                 main_x, main_y,
@@ -2665,7 +3040,7 @@ class PlottingMixin:
             self._show_subtracted_only(mode, main_x, main_y)
 
         try:
-            if str(mode) == "Automatic" and main_x is not None:
+            if str(mode) in ("Automatic", "Auto") and main_x is not None:
                 import numpy as _np
                 self._proc_last_x = _np.asarray(main_x)
                 self._draw_preedge_vline(self._proc_last_x)
@@ -2887,10 +3262,36 @@ class PlottingMixin:
 
     # ------------ Misc helpers ------------
     def _toggle_bg_widgets(self, enabled: bool):
-        self.combo_bg.setEnabled(enabled)
-        self.combo_poly.setEnabled(enabled)
-        self.spin_preedge.setEnabled(enabled)
-        self.chk_show_without_bg.setEnabled(enabled)
+        """Enable/disable BG-related widgets for the Processed Data panel.
+
+        Note: in **Group BG** mode, BG mode (combo_bg) and BG subtraction
+        (chk_show_without_bg) are intentionally locked by :meth:`_set_group_bg_mode`.
+        This helper respects that lock so that other UI flows (e.g. multiple-selection
+        hiding) don't inadvertently re-enable those controls.
+        """
+        group_locked = False
+        try:
+            gcb = getattr(self, "chk_group_bg", None)
+            group_locked = bool(gcb is not None and gcb.isChecked())
+        except Exception:
+            group_locked = False
+
+        try:
+            self.combo_bg.setEnabled(bool(enabled) and (not group_locked))
+        except Exception:
+            pass
+        try:
+            self.combo_poly.setEnabled(bool(enabled))
+        except Exception:
+            pass
+        try:
+            self.spin_preedge.setEnabled(bool(enabled))
+        except Exception:
+            pass
+        try:
+            self.chk_show_without_bg.setEnabled(bool(enabled))  # allow toggling even in Group BG mode
+        except Exception:
+            pass
 
     def _lookup_energy(self, abs_path, parent, length):
         if length < 1:
@@ -3438,8 +3839,13 @@ class PlottingMixin:
 
     # ------------ Compatibility ------------
     def setGeometry(self, *args, **kwargs):
-        """No-op stub to avoid AttributeError if viewer is used like a QWidget."""
+        """Delegate to the underlying Qt widget implementation.
+    
+        A previous no-op stub here prevented QMainWindow.setGeometry() from
+        taking effect due to MRO (PlottingMixin appears before QMainWindow).
+        """
         try:
-            return None
+            return super().setGeometry(*args, **kwargs)
         except Exception:
             return None
+
