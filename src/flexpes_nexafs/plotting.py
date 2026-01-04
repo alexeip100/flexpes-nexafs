@@ -168,6 +168,24 @@ def _basic_md_to_html(md: str) -> str:
 
     # Now process line-by-line with simple block structure
 
+    import re as _re
+
+
+    def _slugify(s: str) -> str:
+
+        s = (s or "").strip().lower()
+
+        s = _re.sub(r"[\s_]+", "-", s)
+
+        s = _re.sub(r"[^a-z0-9\-]+", "", s)
+
+        s = _re.sub(r"-{2,}", "-", s).strip("-")
+
+        return s or "section"
+
+
+    _used_ids = {}
+
     lines_out = []
 
     in_ul = False
@@ -216,11 +234,21 @@ def _basic_md_to_html(md: str) -> str:
 
             if line.startswith("# "):
 
-                lines_out.append(f"<h1>{line[2:].strip()}</h1>")
+                _title = line[2:].strip()
+                _id = _slugify(_title)
+                _used_ids[_id] = _used_ids.get(_id, 0) + 1
+                if _used_ids[_id] > 1:
+                    _id = f"{_id}-{_used_ids[_id]}"
+                lines_out.append(f'<h1 id="{_id}">{_title}</h1>')
 
             elif line.startswith("## "):
 
-                lines_out.append(f"<h2>{line[3:].strip()}</h2>")
+                _title = line[3:].strip()
+                _id = _slugify(_title)
+                _used_ids[_id] = _used_ids.get(_id, 0) + 1
+                if _used_ids[_id] > 1:
+                    _id = f"{_id}-{_used_ids[_id]}"
+                lines_out.append(f'<h2 id="{_id}">{_title}</h2>')
 
             else:
 

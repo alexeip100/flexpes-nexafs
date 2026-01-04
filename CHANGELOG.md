@@ -137,3 +137,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a bundled 'channel_mappings.json' with editable “beamline profiles” mapping canonical roles (TEY/PEY/TFY/PFY, I₀, Energy) to HDF5 dataset names; enables use with different beamlines.
 - Added a "Setup channels" button and an "Active beamline" indicator (default profile: "FlexPES-A"), including a dialog to create/select/edit/save profiles.
 - Added "Delete reference" in the “Load reference” dialog to permanently remove individual spectra from `library.h5` after confirmation.
+
+
+## [2.2.0.post1] – 2025-01-04
+
+### Fixed
+- Fixed a bug with absent TOC in the Help->Usage.
+
