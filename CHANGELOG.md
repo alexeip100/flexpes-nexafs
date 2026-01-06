@@ -139,8 +139,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added "Delete reference" in the “Load reference” dialog to permanently remove individual spectra from `library.h5` after confirmation.
 
 
-## [2.2.0.post1] – 2025-01-04
+## [2.3.0] – 2025-01-05
 
 ### Fixed
-- Fixed a bug with absent TOC in the Help->Usage.
+- Fixed an uncertainty when selecting <select curve name> entries in the Plotted Data legend, which could previously result in renaming the wrong curve.
 
+### Added
+- Added a major new tool for spectral decomposition analysis, accessible via the “PCA” button in the Plotted Data panel.
+- The decomposition tool allows direct transfer of selected plotted spectra to an advanced analysis workspace without intermediate file export.
+- Supported decomposition methods include PCA and chemically motivated variants (NMF, MCR-ALS, anchor-based analysis), provided in a dedicated decomposition application.
+- Strict validation is applied before decomposition, ensuring that spectra are background-subtracted, area-normalized, share a common energy axis, and are free of display offsets.
+- Added descriptive tooltip hints to buttons, checkboxes, and combo boxes throughout the main application to improve usability.
+-   Extended Help → Usage documentation with a general explanation of PCA and related methods, and with a description of the PCA workflow.

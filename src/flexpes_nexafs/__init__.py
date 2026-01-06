@@ -1,1 +1,8 @@
-__version__ = "2.2.0.post1"
+"""FlexPES NEXAFS Plotter package metadata.
+
+Keep version/date here as the single source of truth.
+UI code should read from these constants to avoid drift.
+"""
+
+__version__ = "2.3.0"
+__date__ = "2026-01-05"

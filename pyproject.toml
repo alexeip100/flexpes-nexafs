@@ -4,13 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flexpes-nexafs"
-version = "2.2.0.post1"
+version = "2.3.0"
 description = "FlexPES NEXAFS Plotter: PyQt GUI to browse, process and visualize HDF5 data."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Alexei Preobrajenski" }]
-dependencies = ["PyQt5>=5.15", "matplotlib>=3.7", "numpy>=1.23", "h5py>=3.8", "markdown>=3.4"]
+dependencies = [
+  "PyQt5>=5.15",
+  "matplotlib>=3.7",
+  "numpy>=1.23",
+  "h5py>=3.8",
+  "markdown>=3.4",
+  "pandas>=2.0",
+  "scikit-learn>=1.3",
+]
 
 [project.scripts]
 flexpes-nexafs = "flexpes_nexafs.app:main"

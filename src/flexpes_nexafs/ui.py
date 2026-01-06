@@ -33,6 +33,7 @@ from .plotting import PlottingMixin
 from .export import ExportMixin
 from .library import LibraryMixin
 from .channel_setup import ChannelConfigManager, ChannelSetupDialog
+import re
 class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, LibraryMixin, QMainWindow):
 
     def on_plotted_list_reordered(self):
@@ -177,6 +178,104 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             self.set_group_visibility(pattern, checked)
         except Exception:
             pass
+
+    
+    def _apply_basic_tooltips(self):
+        """Assign helpful tooltips to buttons/checkboxes/comboboxes that lack one.
+
+        - Only touches QPushButton, QCheckBox, QComboBox (per your request).
+        - Does NOT touch trees/lists and does not add any new signal connections.
+        - Uses curated, descriptive tooltips for the main controls, then falls back to a light
+          generic tooltip only when the control is self-explanatory.
+        """
+        try:
+            from PyQt6.QtWidgets import QPushButton, QCheckBox, QComboBox  # type: ignore
+        except Exception:
+            from PyQt5.QtWidgets import QPushButton, QCheckBox, QComboBox  # type: ignore
+
+        # Curated tooltips keyed by attribute name on self (stable and unambiguous).
+        by_attr = {
+            # Main controls
+            "open_button": "Open one or more HDF5 (.h5) files with XAS/NEXAFS spectra",
+            "close_button": "Close the current HDF5 file and clear loaded data",
+            "clear_button": "Clear loaded data and selections in all panels",
+            "help_button": "Open the Usage help page",
+            "setup_channels_button": "Configure channel mappings (TEY/PEY/TFY/PFY etc.) for the open files",
+            "pass_button": "Pass selected processed curves to the Plotted Data panel",
+            "export_ascii_button": "Export selected curves to an ASCII text file",
+            "load_reference_button": "Load a reference spectrum for comparison",
+            "export_import_plotted_button": "Export or import plotted curves as CSV",
+            "pca_plotted_button": "Send eligible plotted curves to the decomposition app (PCA/NMF/MCR). Requires Waterfall OFF and post-normalization = Area",
+            "clear_plotted_data_button": "Remove all curves from the Plotted Data panel",
+
+            # Channel selection helpers
+            "cb_all_tey": "Select all TEY channels in the HDF5 files",
+            "cb_all_pey": "Select all PEY channels in the HDF5 files",
+            "cb_all_tfy": "Select all TFY channels in the HDF5 files",
+            "cb_all_pfy": "Select all PFY channels in the HDF5 files",
+            "cb_all_in_channel": "Apply the current channel selection to all entries within the chosen channel",
+
+            # Processing toggles
+            "chk_normalize": "Enable curve normalization by an incident photon flux curve",
+            "chk_sum": "Sum selected curves in Processed Data",
+            "chk_group_bg": "Use a shared Automatic background model for selected spectra (Group BG)",
+            "chk_group_bg_slope": "Match pre-edge slope across the group in Group BG mode",
+            "chk_show_without_bg": "Show the spectra without background",
+            "chk_show_annotation": "Show curve annotations/labels on the plot",
+            "waterfall_checkbox": "Apply vertical offsets to curves to create a waterfall plot (must be OFF for PCA transfer)",
+
+            # Comboboxes (choices)
+            "combo_all_channel": "Choose detector/channel group to operate on (TEY/PEY/TFY/PFY)",
+            "combo_norm": "Select the incident photon flux curve I₀ used for normalization",
+            "combo_bg": "Choose background subtraction method",
+            "combo_poly": "Choose polynomial order for polynomial background subtraction",
+            "combo_post_norm": "Choose post-normalization method after BG subtraction",
+            "legend_mode_combo": "Choose legend labels for plotted curves: None, User-defined, or Entry number",
+            "grid_mode_combo": "Choose plot grid style",
+        }
+
+        # Apply curated tooltips first (do not clobber a tooltip that is already descriptive).
+        generic_placeholders = {"Button", "Toggle option", "Choose an option"}
+        for attr, tip in by_attr.items():
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            try:
+                current = (w.toolTip() or "").strip()
+                if current and current not in generic_placeholders and current != (getattr(w, "text", lambda: "")() or "").strip():
+                    continue
+                w.setToolTip(tip.rstrip('.'))
+            except Exception:
+                pass
+
+        # Fallback for any remaining buttons/checkboxes/comboboxes without a tooltip.
+        for w in self.findChildren((QPushButton, QCheckBox, QComboBox)):
+            try:
+                if (w.toolTip() or "").strip():
+                    continue
+
+                if isinstance(w, QPushButton):
+                    t = (w.text() or "").strip()
+                    # Slightly descriptive for most buttons; generic only for truly obvious cases.
+                    if t.lower() in {"ok", "cancel", "close"}:
+                        w.setToolTip(t)
+                    elif t:
+                        w.setToolTip(f"Action: {t}")
+                    else:
+                        w.setToolTip("Action button")
+
+                elif isinstance(w, QCheckBox):
+                    t = (w.text() or "").strip()
+                    if t:
+                        w.setToolTip(f"Toggle: {t}")
+                    else:
+                        w.setToolTip("Toggle option")
+
+                else:  # QComboBox
+                    # If we cannot infer the meaning, keep it short.
+                    w.setToolTip("Select an option")
+            except Exception:
+                pass
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FlexPES NEXAFS Plotter")
@@ -202,8 +301,15 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             pass
 
 
-        self.VERSION_NUMBER = "2.2.0"
-        self.CREATION_DATETIME = "2025-12-30"
+        # Keep version/date in sync with the package metadata.
+        try:
+            from . import __version__ as _PKG_VERSION
+            from . import __date__ as _PKG_DATE
+        except Exception:
+            _PKG_VERSION = "2.3.0"
+            _PKG_DATE = "2026-01-05"
+        self.VERSION_NUMBER = str(_PKG_VERSION)
+        self.CREATION_DATETIME = str(_PKG_DATE)
 
         self.hdf5_files = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
@@ -429,10 +535,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.chk_group_bg.setChecked(False)
         self.chk_group_bg.setEnabled(False)
         self.chk_group_bg.setToolTip(
-            "When two or more spectra are selected and BG mode is 'Automatic', "
-            "enables group processing. With Area post-normalization, backgrounds are adjusted "
-            "so that the pre-edge baseline is at zero and the absorption jump after Area normalization "
-            "is consistent across the selected group."
+            "When Automatic BG and multiple spectra are selected, fit a shared background. "
+            "With Area normalization, it aligns pre-edge baseline and jump across the group"
         )
         self.proc_controls_top_layout.addWidget(self.chk_group_bg)
 
@@ -443,7 +547,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.chk_group_bg_slope.setToolTip(
             "When Group BG is active (Automatic BG + multiple selected spectra), "
             "adjusts the backgrounds so that the pre-edge slope after BG subtraction "
-            "is consistent across the selected group."
+            "is consistent across the selected group"
         )
         self.proc_controls_top_layout.addWidget(self.chk_group_bg_slope)
         self.proc_controls_top_layout.addStretch()
@@ -491,6 +595,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.spin_preedge = QSpinBox()
         self.spin_preedge.setRange(0, 100)
         self.spin_preedge.setValue(12)
+        self.spin_preedge.setToolTip("Set pre-edge window length (percent of energy span) used for baseline in Automatic/Group BG")
         self.proc_controls_bottom_layout.addWidget(self.spin_preedge)
 
         self.chk_show_without_bg = QCheckBox("Subtract BG?")
@@ -548,7 +653,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.legend_mode_combo.setCurrentText("User-defined")
         self.legend_mode_combo.setToolTip(
             "Legend labeling mode. 'User-defined' lets you click legend entries to rename. "
-            "'Entry number' labels curves by entryXXXX -> XXXX. 'None' hides the legend."
+            "'Entry number' labels curves by entryXXXX -> XXXX. 'None' hides the legend"
         )
         self.plotted_controls_top_layout.addWidget(self.legend_mode_combo)
 
@@ -633,6 +738,13 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             )
         )
 
+        # PCA / decomposition handoff (opens legacy decomposition window)
+        self.pca_plotted_button = QPushButton("PCA")
+        self.pca_plotted_button.setToolTip("Send selected plotted curves to the PCA/NMF/MCR decomposition window")
+        self.pca_plotted_button.clicked.connect(self.send_plotted_to_pca)
+        self.pca_plotted_button.setMaximumWidth(90)
+        self.plot_buttons_layout.addWidget(self.pca_plotted_button)
+
         self.clear_plotted_data_button = QPushButton("Clear Plotted")
         self.clear_plotted_data_button.clicked.connect(self.clear_plotted_data)
         self.clear_plotted_data_button.setMaximumWidth(150)
@@ -698,6 +810,9 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.update_pass_button_state()
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 3)
+
+        # Tooltips: populate for buttons/checkboxes/comboboxes that lack one.
+        self._apply_basic_tooltips()
 
     def showEvent(self, event):
         """Set initial splitter proportions once the window is shown."""
@@ -966,6 +1081,182 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 super().keyPressEvent(event)
             except Exception:
                 pass
+
+
+    def send_plotted_to_pca(self):
+        """Send visible (checked) plotted curves to the decomposition window.
+
+        This intentionally mirrors the Export CSV (Plotted Data) selection/naming logic,
+        and adds strict scientific gating:
+          - Waterfall must be OFF
+          - post_normalization must be 'Area' for all selected curves
+          - Legend must not be 'None' and names must be resolvable
+        """
+        try:
+            from PyQt5.QtWidgets import QMessageBox
+            import numpy as np
+
+            # 1) Waterfall must be off
+            try:
+                if hasattr(self, "waterfall_checkbox") and self.waterfall_checkbox.isChecked():
+                    QMessageBox.warning(self, "PCA Transfer Blocked",
+                                        "Cannot send curves to PCA when Waterfall is enabled.\n"
+                                        "Please uncheck 'Waterfall' (no offsets) and try again.")
+                    return
+            except Exception:
+                pass
+
+            # 2) Determine visible curves in current plotted-list order (same as Export CSV)
+            visible_keys = []
+            try:
+                if hasattr(self, "plotted_list") and self.plotted_list is not None:
+                    for row in range(self.plotted_list.count()):
+                        item = self.plotted_list.item(row)
+                        if item is None:
+                            continue
+                        key = item.data(Qt.UserRole)
+                        if not key:
+                            continue
+                        ln = self.plotted_lines.get(key)
+                        if ln is not None and ln.get_visible():
+                            visible_keys.append(key)
+            except Exception:
+                pass
+
+            if not visible_keys:
+                QMessageBox.warning(self, "PCA Transfer Blocked",
+                                    "No curves are selected/visible in Plotted Data.\n"
+                                    "Please check (show) one or more curves and try again.")
+                return
+
+            # 3) Legend mode + naming rules (mirror Export CSV)
+            legend_mode = None
+            try:
+                legend_mode = self.legend_mode_combo.currentText().strip()
+            except Exception:
+                legend_mode = "User-defined"
+
+            if legend_mode == "None":
+                QMessageBox.warning(self, "PCA Transfer Blocked",
+                                    "Cannot send curves to PCA when Legend is set to 'None'.\n"
+                                    "Please set Legend to 'User-defined' or 'Entry number'.")
+                return
+            # Helper: get entry number digits from metadata (mirrors Export CSV)
+            def _entry_digits_from_meta(key: str):
+                import re
+                try:
+                    meta = getattr(self, "plotted_metadata", {}) or {}
+                    src_entry = (meta.get(key, {}) or {}).get("source_entry", "") or ""
+                    m = re.search(r"entry(\d+)", str(src_entry))
+                    if m:
+                        return m.group(1)
+                except Exception:
+                    pass
+                try:
+                    m = re.search(r"entry(\d+)", str(key))
+                    if m:
+                        return m.group(1)
+                except Exception:
+                    pass
+                return None
+
+            headers = []
+            y_columns = []
+
+            # Use X from first visible line; min_len truncation mirrors Export CSV
+            first_line = self.plotted_lines.get(visible_keys[0])
+            if first_line is None:
+                QMessageBox.warning(self, "PCA Transfer Blocked", "Internal error: first plotted curve line not found.")
+                return
+            x_data = np.asarray(first_line.get_xdata()).ravel()
+            min_len = len(x_data)
+
+            # 4) Scientific gating: post_normalization must be Area for all curves
+            bad_area = []
+            for key in visible_keys:
+                md = getattr(self, "plotted_metadata", {}).get(key, {}) if hasattr(self, "plotted_metadata") else {}
+                post_norm = str(md.get("post_normalization", "")).strip()
+                if post_norm != "Area":
+                    bad_area.append(key)
+
+            if bad_area:
+                QMessageBox.warning(self, "PCA Transfer Blocked",
+                                    "Cannot send curves to PCA: all selected curves must be BG-subtracted and Area-normalized.\n"
+                                    "Please ensure post-normalization is set to 'Area' before plotting/passing curves.")
+                return
+
+            # Build columns and headers (min_len truncation, no X-grid equality check — same as Export CSV)
+            if legend_mode == "Entry number":
+                for key in visible_keys:
+                    ln = self.plotted_lines.get(key)
+                    if ln is None:
+                        continue
+                    y = np.asarray(ln.get_ydata()).ravel()
+                    min_len = min(min_len, len(y))
+                    entry_num = _entry_digits_from_meta(key)
+                    if not entry_num:
+                        QMessageBox.warning(self, "PCA Transfer Blocked",
+                                            "Cannot label curves by entry number: one or more selected curves has no entry id.")
+                        return
+                    headers.append(entry_num)
+                    y_columns.append(y)
+            else:  # User-defined
+                for key in visible_keys:
+                    ln = self.plotted_lines.get(key)
+                    if ln is None:
+                        continue
+                    y = np.asarray(ln.get_ydata()).ravel()
+                    min_len = min(min_len, len(y))
+                    lbl = None
+                    try:
+                        lbl = self.custom_labels.get(key)
+                    except Exception:
+                        lbl = None
+                    if not lbl or str(lbl).strip() == "" or str(lbl).strip() == "<select curve name>":
+                        QMessageBox.warning(self, "PCA Transfer Blocked",
+                                            "Cannot send curves to PCA: some selected curves have no user-defined name.\n"
+                                            "Please name all selected curves (or switch Legend to 'Entry number').")
+                        return
+                    headers.append(str(lbl).strip())
+                    y_columns.append(y)
+
+            x_out = x_data[:min_len]
+            y_out = [np.asarray(y)[:min_len] for y in y_columns]
+
+            # 5) Open (or reuse) decomposition window and inject dataset
+            try:
+                from flexpes_nexafs.decomposition.legacy import MainWindow as DecompWindow
+            except Exception as ex:
+                QMessageBox.critical(self, "PCA Transfer Error",
+                                     f"Failed to import decomposition module:\n{ex}")
+                return
+
+            try:
+                if getattr(self, "_decomp_window", None) is None:
+                    self._decomp_window = DecompWindow()
+                self._decomp_window.set_dataset(x_out, y_out, headers)
+                self._decomp_window.show()
+                try:
+                    self._decomp_window.raise_()
+                    self._decomp_window.activateWindow()
+                except Exception:
+                    pass
+            except Exception as ex:
+                QMessageBox.critical(self, "PCA Transfer Error",
+                                     f"Failed to send data to decomposition window:\n{ex}")
+                return
+
+
+        except Exception as _ex:
+            try:
+                from PyQt5.QtWidgets import QMessageBox
+            except Exception:
+                QMessageBox = None
+            msg = f"Unexpected error in PCA transfer:\n{_ex}"
+            if QMessageBox is not None:
+                QMessageBox.critical(self, "PCA Transfer Error", msg)
+            else:
+                print(msg)
 
 MainWindow = HDF5Viewer  # backward-compatible alias
 

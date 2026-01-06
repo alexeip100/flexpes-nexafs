@@ -1391,31 +1391,20 @@ class PlottingMixin:
             )
             if ok and new_text:
                 # Map the clicked legend text to the corresponding plotted curve.
-                # This avoids ambiguity when multiple curves share the same placeholder name.
+                # We use the legend's current ordering (stored when the legend is rebuilt)
+                # so renaming is unambiguous even when multiple curves share the same
+                # placeholder label (<select curve name>).
                 key_to_rename = None
                 try:
                     idx_text = texts.index(artist)
                 except Exception:
                     idx_text = None
-
-                handle = None
-                if idx_text is not None:
-                    # Prefer legend lines (they correspond 1:1 with legend texts)
-                    try:
-                        leg_lines = list(leg.get_lines() or [])
-                        if 0 <= idx_text < len(leg_lines):
-                            handle = leg_lines[idx_text]
-                    except Exception:
-                        handle = None
-
-                if handle is not None:
-                    try:
-                        for k, ln in getattr(self, "plotted_lines", {}).items():
-                            if ln is handle:
-                                key_to_rename = k
-                                break
-                    except Exception:
-                        key_to_rename = None
+                try:
+                    legend_keys = getattr(self, "_legend_keys_in_order", None)
+                    if idx_text is not None and isinstance(legend_keys, (list, tuple)) and 0 <= idx_text < len(legend_keys):
+                        key_to_rename = str(legend_keys[idx_text])
+                except Exception:
+                    key_to_rename = None
 
                 # Fallback: old text matching (legacy behavior)
                 if key_to_rename is None:
@@ -1578,6 +1567,7 @@ class PlottingMixin:
                 self._plotted_legend_bbox = saved_bbox
 
             handles, labels = [], []
+            legend_keys_in_order = []  # keys corresponding 1:1 with handles/labels
             entry_mode = mode in ("entry number", "entry", "entry-number", "entry_id", "entry id", "id")
             for key in order:
                 line = getattr(self, "plotted_lines", {}).get(key)
@@ -1585,6 +1575,7 @@ class PlottingMixin:
                     continue
 
                 handles.append(line)
+                legend_keys_in_order.append(key)
 
                 lbl = None
                 if entry_mode:
@@ -1659,9 +1650,19 @@ class PlottingMixin:
                     if leg:
                         leg.set_draggable(True)
                         for t in leg.get_texts():
-                            t.set_picker(True)
+                            # Smaller picker tolerance reduces accidental selection of a neighbour entry.
+                            try:
+                                t.set_picker(5)
+                            except Exception:
+                                t.set_picker(True)
                 except Exception:
                     pass
+
+            # Store legend ordering for unambiguous renaming in on_legend_pick()
+            try:
+                self._legend_keys_in_order = list(legend_keys_in_order)
+            except Exception:
+                self._legend_keys_in_order = legend_keys_in_order
             try:
                 self._plotted_legend = leg
             except Exception:

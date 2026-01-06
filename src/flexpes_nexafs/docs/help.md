@@ -139,6 +139,7 @@ that exist in your HDF5 files.
   **Processed Data** panel.
 
   **Background model used in Group BG (Auto BG):**
+
   - Each spectrum starts from its *own* **Auto BG** (a low-degree polynomial fitted to the pre-edge, with the same
     end-slope constraint as in single-spectrum mode).
   - The background is then adjusted per spectrum by adding a small **affine term** *(constant + global linear term)* so that
@@ -296,18 +297,34 @@ together with measured curves in the **Plotted Data** tab.
 
 > Tip: If you want a fully custom curated library, keep a backup copy of `library.h5` and/or version it with Git.
 
-### Export / Clear
+### Export / Import
+ 
+Opens a menu:
 
-- **Export/Import (Plotted):**  
-  Click to open a menu:
-  - **Export CSV:** export the curves currently shown in the Plotted Data tab as CSV.
+- **Export CSV:** export the curves currently shown in the Plotted Data tab as CSV.
     - Column headers are derived from the **Legend** mode in Plotted Data:
       - **Entry number** → headers are the entry numbers.
       - **User-defined** → headers are the user-assigned curve names.
     - The placeholder `<select curve name>` is **never** allowed in exported CSV headers.
     - If required names are missing (e.g. user-defined names not set, or no entry numbers available), the export is blocked and a warning is shown.
-  - **Import CSV:** load one or several previously exported CSV files into the Plotted Data plot.
+- **Import CSV:** load one or several previously exported CSV files into the Plotted Data plot.
 
-- **Clear Plotted:**  
-  Remove all curves from the Plotted Data tab (but keep raw and processed
-  data untouched).
+### PCA (Principle Component Analysis) 
+  
+PCA and related multivariate decomposition methods are used to identify the dominant sources of variation in a set of spectra, without assuming a specific physical model.
+In XAS, these methods are useful for analyzing systematic spectral changes arising from variations in measurement geometry, temperature, pressure, or chemical state, such as metal oxidation-state (valence) evolution.
+While PCA components are not necessarily physical spectra by themselves, they provide a powerful starting point for understanding spectral trends and for guiding more chemically constrained methods such as NMF or MCR-ALS.
+ 
+The PCA button opens the **spectral decomposition** window (PCA / NMF / MCR-ALS / Anchors) and transfer the currently shown Plotted curves to this window.
+The transfer uses the same curve selection and naming rules as **Export CSV** (visible/checked curves, legend-based names).
+
+For a scientifically meaningful decomposition, the button is blocked unless:
+
+- **Waterfall** is **unchecked** (no offsets applied), and
+- all selected curves have **post-normalization = Area** (i.e. background-subtracted, Area-normalized curves).
+
+A short explanation of methods PCA, NMF, MCR-ALS, as well as the usage of anchor spectra is available under the specific **Help** buttons on the decomposition app panels.
+
+### Clear Plotted
+  
+Remove all curves from the Plotted Data tab (but keep raw and processed data untouched).
