@@ -4,6 +4,7 @@ import time
 import csv
 import re
 import numpy as np
+from .compat import trapezoid
 from PyQt5.QtWidgets import QFileDialog, QMessageBox, QDialog
 from PyQt5.QtCore import Qt
 
@@ -518,7 +519,7 @@ class ExportMixin:
                 y_final /= denom
 
         elif norm_mode == "Area":
-            area = np.trapz(y_final, x_out)
+            area = trapezoid(y_final, x_out)
             if area:
                 y_final /= area
         # “None” → leave y_final untouched

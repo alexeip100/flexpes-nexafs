@@ -4,6 +4,7 @@ from .data import lookup_energy
 
 import h5py
 import numpy as np
+from .compat import trapezoid
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 plt.ioff()
@@ -2627,7 +2628,7 @@ class PlottingMixin:
             r0 = float(np.nanmean((yf - bgf)[:M]))
             s0 = (yf - bgf) - r0  # pre-edge mean is ~0
 
-            area0 = float(np.trapz(s0, xf))
+            area0 = float(trapezoid(s0, xf))
             if (not np.isfinite(area0)) or abs(area0) < 1e-15:
                 continue
             jump0 = float(np.nanmean(s0[i_start:]))  # pre is 0 by construction
@@ -2638,7 +2639,7 @@ class PlottingMixin:
             # Terms needed for the beta solve under the constraint that pre-edge remains 0.
             mp = float(np.nanmean(t[:M]))
             tt = t - mp  # this ensures the pre-edge mean of the correction term is 0
-            T = float(np.trapz(tt, xf))
+            T = float(trapezoid(tt, xf))
             P = float(np.nanmean(tt[i_start:]))
 
             # Optional: pre-edge slope of the BG-subtracted signal (after baseline shift).
@@ -2673,7 +2674,7 @@ class PlottingMixin:
                     denomK = float(max(1, (end - int(M))))
                     w[int(M) : end + 1] = 0.5 * (1.0 + np.cos(np.pi * tt_idx / denomK))
                     phi2 = w * (xf - x_pre_mean)
-                    T2 = float(np.trapz(phi2, xf))
+                    T2 = float(trapezoid(phi2, xf))
                     P2 = float(np.nanmean(phi2[i_start:]))
                 except Exception:
                     phi2 = None
@@ -3877,4 +3878,3 @@ class PlottingMixin:
             return super().setGeometry(*args, **kwargs)
         except Exception:
             return None
-

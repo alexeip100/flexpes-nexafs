@@ -306,8 +306,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             from . import __version__ as _PKG_VERSION
             from . import __date__ as _PKG_DATE
         except Exception:
-            _PKG_VERSION = "2.3.0"
-            _PKG_DATE = "2026-01-05"
+            _PKG_VERSION = "2.3.1"
+            _PKG_DATE = "2026-01-07"
         self.VERSION_NUMBER = str(_PKG_VERSION)
         self.CREATION_DATETIME = str(_PKG_DATE)
 

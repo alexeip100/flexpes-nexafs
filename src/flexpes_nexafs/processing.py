@@ -28,6 +28,7 @@ def apply_normalization(viewer, abs_path, parent, y_data):
 
 
 import numpy as np
+from .compat import trapezoid
 import matplotlib.pyplot as plt
 plt.ioff()
 from PyQt5.QtCore import Qt
@@ -84,7 +85,7 @@ def _proc_safe_post_normalize(viewer, x, y, mode):
             d = float(yf[-1])
             return y / d if _nonzero(d) else y
         if mode == "Area":
-            a = float(np.trapz(yf, xf))
+            a = float(trapezoid(yf, xf))
             return y / a if _nonzero(a) else y
     except Exception:
         return y
@@ -241,7 +242,7 @@ class ProcessingMixin:
                 d = float(yf[-1])
                 if _nonzero(d): return y / d
             elif mode == "Area":
-                a = float(np.trapz(yf, xf))
+                a = float(trapezoid(yf, xf))
                 if _nonzero(a): return y / a
         except Exception as ex:
             print("safe_post_norm error:", ex)

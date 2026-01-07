@@ -139,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added "Delete reference" in the “Load reference” dialog to permanently remove individual spectra from `library.h5` after confirmation.
 
 
-## [2.3.0] – 2025-01-05
+## [2.3.0] – 2026-01-05
 
 ### Fixed
 - Fixed an uncertainty when selecting <select curve name> entries in the Plotted Data legend, which could previously result in renaming the wrong curve.
@@ -151,3 +151,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Strict validation is applied before decomposition, ensuring that spectra are background-subtracted, area-normalized, share a common energy axis, and are free of display offsets.
 - Added descriptive tooltip hints to buttons, checkboxes, and combo boxes throughout the main application to improve usability.
 -   Extended Help → Usage documentation with a general explanation of PCA and related methods, and with a description of the PCA workflow.
+
+
+## [2.3.1] – 2026-01-07
+
+### Fixed
+- Restored compatibility with newer NumPy versions (NumPy ≥ 2.4), where `numpy.trapz` is no longer available, by switching to trapezoidal integration via `numpy.trapezoid` with a fallback for older NumPy versions
+- Added a small internal helper module (`compat.py`) to keep the same integration API across NumPy 1.x and 2.x
+
+### Changed
+- Improved responsiveness when launching the decomposition tool: the first press of **PCA** now opens the decomposition app in under ~1 second by preloading heavy dependencies after launch (in `app.py`)

@@ -1,7 +1,9 @@
 try:
     from PyQt6 import QtWidgets  # type: ignore
+    from PyQt6 import QtCore  # type: ignore
 except Exception:
     from PyQt5 import QtWidgets  # type: ignore
+    from PyQt5 import QtCore  # type: ignore
 
 from .ui import MainWindow
 
@@ -42,6 +44,26 @@ def main():
 
     win = MainWindow()
     win.show()
+
+    # Preload the decomposition UI and its heavy dependencies shortly after startup
+    # so the first click on the "PCA" button feels responsive. This runs after the
+    # event loop starts and should never crash the main application.
+    def _preload_decomposition() -> None:
+        try:
+            # Heavy imports (NumPy wheels already present, but sklearn/pandas can take time)
+            import pandas  # noqa: F401
+            import sklearn  # noqa: F401
+
+            # Import the decomposition UI module to warm up its import graph
+            from .decomposition import legacy  # noqa: F401
+        except Exception:
+            # Never fail startup due to preload
+            pass
+
+    try:
+        QtCore.QTimer.singleShot(200, _preload_decomposition)
+    except Exception:
+        pass
 
     # Qt5 uses exec_(), Qt6 uses exec()
     try:
