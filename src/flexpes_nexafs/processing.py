@@ -397,9 +397,35 @@ class ProcessingMixin:
     
         # Initialize anchors if absent
         if not hasattr(self, "manual_points") or not self.manual_points:
-            n_seed = 4
+            # Match the number of anchors to the selected polynomial degree.
+            # A polynomial of degree d is defined by (at least) d+1 points.
+            try:
+                d = int(getattr(self, "manual_poly_degree", int(self.combo_poly.currentText())))
+            except Exception:
+                d = 3
+            n_seed = max(1, d + 1)
+
             n = len(main_x)
-            idxs = np.linspace(0, max(0, n - 1), n_seed).astype(int) if n > 0 else np.array([], dtype=int)
+            if n <= 0:
+                idxs = np.array([], dtype=int)
+            else:
+                # Never create more anchors than we have samples.
+                n_seed = min(n_seed, n)
+
+                # Evenly distribute anchors across the available x-range.
+                idxs = np.linspace(0, n - 1, n_seed)
+                idxs = np.unique(np.clip(np.round(idxs).astype(int), 0, n - 1))
+
+                # Guard against duplicate indices after rounding (e.g., when n_seed is close to n).
+                # If we lost some anchors, add additional distinct indices to reach n_seed.
+                if idxs.size < n_seed:
+                    all_idx = np.arange(n, dtype=int)
+                    remaining = np.setdiff1d(all_idx, idxs)
+                    if remaining.size:
+                        take = min(n_seed - idxs.size, remaining.size)
+                        extra = remaining[np.clip(np.round(np.linspace(0, remaining.size - 1, take)).astype(int), 0, remaining.size - 1)]
+                        idxs = np.sort(np.concatenate([idxs, extra]))
+
             self.manual_points = [{"x": float(main_x[i]), "y": float(auto_bg[i]), "artist": None} for i in idxs]
     
         # Clear old artists

@@ -160,4 +160,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a small internal helper module (`compat.py`) to keep the same integration API across NumPy 1.x and 2.x
 
 ### Changed
-- Improved responsiveness when launching the decomposition tool: the first press of **PCA** now opens the decomposition app in under ~1 second by preloading heavy dependencies after launch (in `app.py`)
+- Improved responsiveness when launching the decomposition tool: the first press of **PCA** now opens the decomposition app in under ~1 second by preloading heavy dependencies after launch (in `app.py`).
+
+
+## [2.3.2] – 2026-01-09
+
+### Fixed
+- Manual background subtraction: anchor points now match the selected polynomial degree (number and placement), instead of always showing the degree-3 anchor pattern
+- Plotted Data legend: switching legend mode no longer shrinks/rescales the plot; the legend is kept inside the axes by adjusting its anchor position
+- Decomposition app anchors: fixed multiple issues preventing anchors/components from being plotted or used reliably (including missing imports and component/anchor plotting failures)
+- Anchor workflow integration: MCR-ALS components are now automatically available in the anchor calibration workflow when switching tabs
+
+### Added
+- Decomposition app workflow improvements for anchors: more robust loading of raw anchor CSV spectra, and improved calibration/application of anchors against decomposition components
+- Decomposition app usability: added **Clear all** and a general **Help** on the Data tab to support standalone work on external CSV datasets (not only PCA-passed data)
+
+### Changed
+- Decomposition app layout: splitters (draggable dividers) added on Data and Anchor tabs for flexible resizing of plots vs control panels
+- PCA button behavior: if no curves are selected, the decomposition app can still be launched (with an explicit OK/Cancel warning) and Open CSV is enabled
+- Decomposition app defaults: Auto-k is OFF by default and k defaults to 2

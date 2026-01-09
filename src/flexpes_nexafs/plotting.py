@@ -1476,6 +1476,72 @@ class PlottingMixin:
         except Exception:
             pass
         return str(key)
+
+
+    def _keep_legend_inside_axes(self, ax, leg, pad: float = 0.01) -> None:
+        """Ensure the legend stays fully inside the Axes without shrinking the plot.
+
+        Matplotlib's draggable legend stores the placement via bbox_to_anchor (often using
+        an "upper left" reference point). When legend text changes (e.g. switching legend
+        mode), the legend box can grow and protrude outside the Axes, and tight_layout may
+        shrink the Axes to make room. Here we (1) exclude the legend from layout and (2)
+        nudge its anchor point so the legend bbox fits inside [0, 1]x[0, 1] in Axes coords.
+        """
+        if ax is None or leg is None:
+            return
+        # Do not let tight_layout / constrained_layout resize the Axes because of the legend
+        try:
+            leg.set_in_layout(False)
+        except Exception:
+            pass
+
+        try:
+            fig = ax.figure
+            canvas = getattr(fig, "canvas", None)
+            if canvas is None:
+                return
+            # Need a draw to get correct text extents
+            try:
+                canvas.draw()
+            except Exception:
+                return
+            renderer = canvas.get_renderer()
+            bbox_disp = leg.get_window_extent(renderer=renderer)
+            bbox_ax = bbox_disp.transformed(ax.transAxes.inverted())
+
+            dx = 0.0
+            dy = 0.0
+            # Horizontal
+            if bbox_ax.x0 < pad:
+                dx = pad - bbox_ax.x0
+            elif bbox_ax.x1 > 1.0 - pad:
+                dx = (1.0 - pad) - bbox_ax.x1
+            # Vertical
+            if bbox_ax.y0 < pad:
+                dy = pad - bbox_ax.y0
+            elif bbox_ax.y1 > 1.0 - pad:
+                dy = (1.0 - pad) - bbox_ax.y1
+
+            if dx != 0.0 or dy != 0.0:
+                # Re-anchor using the legend's current upper-left corner (axes coords)
+                ul_x = bbox_ax.x0 + dx
+                ul_y = bbox_ax.y1 + dy
+                try:
+                    # Use 'upper left' anchoring to interpret bbox_to_anchor as UL corner
+                    try:
+                        leg.set_loc("upper left")
+                    except Exception:
+                        leg._loc = 2
+                    leg.set_bbox_to_anchor((ul_x, ul_y), transform=ax.transAxes)
+                except Exception:
+                    return
+
+                try:
+                    canvas.draw()
+                except Exception:
+                    pass
+        except Exception:
+            return
     def update_legend(self):
         """Rebuild the legend so its order follows the Plotted list (visible curves only)."""
         try:
@@ -1644,11 +1710,31 @@ class PlottingMixin:
                 saved_loc = getattr(self, "_plotted_legend_loc", None)
 
                 if saved_loc is not None:
-                    leg = ax.legend(handles, labels, loc=saved_loc)
+                    # Preserve the user's dragged legend placement when possible.
+                    # Matplotlib's draggable legend often stores placement via bbox_to_anchor.
+                    saved_bbox = getattr(self, "_plotted_legend_bbox", None)
+                    if saved_bbox is not None:
+                        try:
+                            # Use a plain tuple in Axes coordinates when possible
+                            b = getattr(saved_bbox, "bounds", None)
+                            if b is not None:
+                                leg = ax.legend(handles, labels, loc=saved_loc, bbox_to_anchor=b, bbox_transform=ax.transAxes)
+                            else:
+                                leg = ax.legend(handles, labels, loc=saved_loc, bbox_to_anchor=saved_bbox, bbox_transform=ax.transAxes)
+                        except Exception:
+                            leg = ax.legend(handles, labels, loc=saved_loc)
+                    else:
+                        leg = ax.legend(handles, labels, loc=saved_loc)
                 else:
                     leg = ax.legend(handles, labels)
                 try:
                     if leg:
+                        # Prevent tight_layout from shrinking the axes to "make room" for the legend
+                        # (we keep the plot size constant and instead nudge the legend to fit inside the axes).
+                        try:
+                            leg.set_in_layout(False)
+                        except Exception:
+                            pass
                         leg.set_draggable(True)
                         for t in leg.get_texts():
                             # Smaller picker tolerance reduces accidental selection of a neighbour entry.
@@ -1677,6 +1763,12 @@ class PlottingMixin:
             if leg is not None:
                 try:
                     leg.set_visible(bool(show_legend))
+                except Exception:
+                    pass
+
+                # Keep the legend fully inside the Axes without shrinking the plot area
+                try:
+                    self._keep_legend_inside_axes(ax, leg)
                 except Exception:
                     pass
 

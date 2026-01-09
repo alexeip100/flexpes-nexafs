@@ -306,8 +306,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             from . import __version__ as _PKG_VERSION
             from . import __date__ as _PKG_DATE
         except Exception:
-            _PKG_VERSION = "2.3.1"
-            _PKG_DATE = "2026-01-07"
+            _PKG_VERSION = "2.3.2"
+            _PKG_DATE = "2026-01-08"
         self.VERSION_NUMBER = str(_PKG_VERSION)
         self.CREATION_DATETIME = str(_PKG_DATE)
 
@@ -1123,10 +1123,57 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             except Exception:
                 pass
 
+            # If nothing is selected/visible, allow launching the decomposition app anyway
+            # (useful for loading external CSV datasets directly in the decomp app).
             if not visible_keys:
-                QMessageBox.warning(self, "PCA Transfer Blocked",
-                                    "No curves are selected/visible in Plotted Data.\n"
-                                    "Please check (show) one or more curves and try again.")
+                resp = QMessageBox.warning(
+                    self,
+                    "No curves selected",
+                    "No curves are selected/visible in Plotted Data.\n"
+                    "It is assumed you plan to work on a different dataset.\n\n"
+                    "Open the decomposition app anyway?",
+                    QMessageBox.Ok | QMessageBox.Cancel,
+                    QMessageBox.Ok,
+                )
+                if resp != QMessageBox.Ok:
+                    return
+
+                try:
+                    from flexpes_nexafs.decomposition.legacy import MainWindow as DecompWindow
+                except Exception as ex:
+                    QMessageBox.critical(self, "PCA Transfer Error",
+                                         f"Failed to import decomposition module:\n{ex}")
+                    return
+
+                try:
+                    if getattr(self, "_decomp_window", None) is None:
+                        self._decomp_window = DecompWindow()
+                    # Ensure the decomp app is in a clean state and CSV loading is enabled
+                    if hasattr(self._decomp_window, "tab_data") and hasattr(self._decomp_window.tab_data, "clear_all"):
+                        try:
+                            self._decomp_window.tab_data.clear_all()
+                        except Exception:
+                            pass
+                    if hasattr(self._decomp_window, "tab_data") and hasattr(self._decomp_window.tab_data, "btn_open"):
+                        try:
+                            self._decomp_window.tab_data.btn_open.setEnabled(True)
+                        except Exception:
+                            pass
+                    if hasattr(self._decomp_window, "tabs"):
+                        try:
+                            self._decomp_window.tabs.setCurrentIndex(0)
+                        except Exception:
+                            pass
+
+                    self._decomp_window.show()
+                    try:
+                        self._decomp_window.raise_()
+                        self._decomp_window.activateWindow()
+                    except Exception:
+                        pass
+                except Exception as ex:
+                    QMessageBox.critical(self, "PCA Transfer Error",
+                                         f"Failed to open decomposition window:\n{ex}")
                 return
 
             # 3) Legend mode + naming rules (mirror Export CSV)

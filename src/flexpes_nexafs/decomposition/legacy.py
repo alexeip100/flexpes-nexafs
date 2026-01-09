@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QMessageBox, QTabWidget, QLabel,
     QSpinBox, QDoubleSpinBox, QCheckBox, QSizePolicy, QListWidget,
-    QListWidgetItem, QDialog, QTextEdit, QDialogButtonBox, QComboBox, QInputDialog, QGroupBox, QFormLayout
+    QListWidgetItem, QDialog, QTextEdit, QDialogButtonBox, QComboBox, QInputDialog, QGroupBox, QFormLayout, QSplitter
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -125,7 +125,7 @@ def mean_residual_vs_energy(X, Xhat):
 
 
 # -----------------------------
-# Anchor-processing helpers (borrowed from XAS_curve_fitting_v1.0.py)
+# Anchor-processing helpers (borrowed from this tool)
 # -----------------------------
 
 def cumulative_integral(y, x):
@@ -227,6 +227,15 @@ class DataModel:
             len(self.spectra) > 0
             and len(self.sample_labels) == len(self.spectra)
         )
+
+    def clear(self):
+        """Clear all loaded data and derived matrices."""
+        self.energies = []
+        self.spectra = []
+        self.sample_labels = []
+        self.active_indices = None
+        self.energy = None
+        self.X = None
 
     def load_csv(self, paths):
         """Load one or multiple CSV files.
@@ -377,15 +386,27 @@ class DataTab(QWidget):
         super().__init__()
         self.model = model
 
-        main = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        splitter = QSplitter(Qt.Horizontal)
+        outer.addWidget(splitter, 1)
 
-        # Left: controls + main canvas
-        left = QVBoxLayout()
-        main.addLayout(left, 2)
+        left_w = QWidget()
+        left = QVBoxLayout(left_w)
+        splitter.addWidget(left_w)
 
+        # Top row: Open / Clear / Help
+        top_row = QHBoxLayout()
         self.btn_open = QPushButton("Open CSV…")
         self.btn_open.clicked.connect(self.open_csv)
-        left.addWidget(self.btn_open)
+        self.btn_clear_all = QPushButton("Clear all")
+        self.btn_clear_all.clicked.connect(self.clear_all)
+        self.btn_help = QPushButton("Help")
+        self.btn_help.clicked.connect(self.show_workflow_help)
+        top_row.addWidget(self.btn_open)
+        top_row.addWidget(self.btn_clear_all)
+        top_row.addStretch(1)
+        top_row.addWidget(self.btn_help)
+        left.addLayout(top_row)
 
         self.fig, self.canvas = new_canvas()
         self.ax = self.fig.add_subplot(111)
@@ -394,8 +415,12 @@ class DataTab(QWidget):
         left.addWidget(self.canvas, 1)
 
         # Right: list of samples
-        right = QVBoxLayout()
-        main.addLayout(right, 1)
+        right_w = QWidget()
+        right = QVBoxLayout(right_w)
+        splitter.addWidget(right_w)
+
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
 
         self.list_samples = QListWidget()
         # React to checkbox changes by updating selection + plot
@@ -413,6 +438,29 @@ class DataTab(QWidget):
         right.addLayout(btn_group)
 
         right.addWidget(self.list_samples, 1)
+
+
+    def clear_all(self):
+        """Clear all loaded data and reset downstream analysis state."""
+        self.model.clear()
+        self.list_samples.clear()
+        self.ax.clear()
+        self.canvas.draw()
+        # Re-enable CSV loading (it may be disabled when data is injected from the main app)
+        self.btn_open.setEnabled(True)
+
+        # Best-effort: reset other tabs if they expose a reset/clear hook
+        mw = self.window()
+        for attr in ("tab_pca", "tab_nmf", "tab_mcr", "tab_anchors_cal", "tab_anchors_apply"):
+            tab = getattr(mw, attr, None)
+            if tab is None:
+                continue
+            for fn in ("reset", "clear", "clear_results", "on_new_data"):
+                if hasattr(tab, fn):
+                    try:
+                        getattr(tab, fn)()
+                    except Exception:
+                        pass
 
 
     def open_csv(self):
@@ -441,6 +489,65 @@ class DataTab(QWidget):
 
         self.update_active_indices()
         self.plot_selected()
+
+    def show_workflow_help(self):
+            """Show a high-level help dialog for the recommended decomposition workflow."""
+            html = """
+            <h2>Recommended workflow (overview)</h2>
+            <p>
+            This tool supports multivariate decomposition of XAS datasets that show systematic spectral
+            changes across a series (angle, temperature, pressure, time, chemical environment, etc.).
+            </p>
+
+            <ul>
+              <li><b>PCA</b>: estimate the effective dimensionality (how many independent contributions are needed)
+                  and identify dominant trends</li>
+              <li><b>NMF</b>: obtain a non-negative decomposition that is often closer to physically meaningful
+                  spectra and concentrations than raw PCA components</li>
+              <li><b>MCR-ALS</b>: iteratively refine components and concentrations under constraints
+                  (e.g. non-negativity) and evaluate reconstruction quality</li>
+            </ul>
+
+            <h2>Anchor spectra</h2>
+            <p>
+            Anchors let you incorporate known reference spectra (or robust components extracted from a calibration dataset)
+            as fixed or guided basis spectra.
+            </p>
+            <ul>
+              <li><b>Anchor calibration</b>: build and store a set of anchor spectra from a representative dataset</li>
+              <li><b>Anchor application</b>: apply calibrated anchors to decompose new experimental datasets</li>
+            </ul>
+
+            <p>
+            Use the <b>Help</b> buttons in the individual tabs for method- and panel-specific details.
+            </p>
+            """
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Workflow help")
+            dlg.setSizeGripEnabled(True)
+
+            layout = QVBoxLayout(dlg)
+
+            txt = QTextEdit()
+            txt.setReadOnly(True)
+
+            f = txt.font()
+            f.setPointSize(f.pointSize() + 5)
+            txt.setFont(f)
+
+            txt.setLineWrapMode(QTextEdit.WidgetWidth)
+            txt.setAcceptRichText(True)
+            txt.setHtml(html)
+
+            layout.addWidget(txt, 1)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+            buttons.accepted.connect(dlg.accept)
+            layout.addWidget(buttons)
+
+            dlg.resize(860, 600)
+            dlg.exec_()
 
     def plot_all(self):
         """Plot all samples (ignores checkboxes)."""
@@ -546,7 +653,7 @@ class BaseAnalysisTab(QWidget):
         root.addWidget(self.lbl_status)
 
         self.chk_auto_k = QCheckBox("Auto k (PCA ≥99% EVR)")
-        self.chk_auto_k.setChecked(True)
+        self.chk_auto_k.setChecked(False)
         self.chk_auto_k.setToolTip(
             "If enabled, k is chosen automatically from PCA so that the cumulative explained variance ratio (EVR) reaches 99%.\n"
             "This is a practical starting point for many smooth XAS series."
@@ -559,7 +666,7 @@ class BaseAnalysisTab(QWidget):
         self.spin_k = QSpinBox()
         self.spin_k.setRange(1, 10)
         self.spin_k.setValue(2)
-        self.spin_k.setEnabled(False)
+        self.spin_k.setEnabled(True)
         self.spin_k.setToolTip(
             "Manual number of components (k). Used only when Auto k is disabled.\n"
             "Chemically, k should roughly match the number of independent spectral patterns."
@@ -655,7 +762,7 @@ class BaseAnalysisTab(QWidget):
             label="per-sample RMSE"
         )
         self.ax_err.set_xlabel("Sample index")
-        self.ax_err.set_ylabel("RMSE")
+        self.ax_err.set_ylabel("RMS error")
         self.ax_err.set_title(f"{method_name}: error metrics (k={k})")
         self.ax_err.grid(True, which='both', alpha=0.5, linewidth=0.8)
         self.ax_err.legend()
@@ -1116,6 +1223,11 @@ class NMFTab(BaseAnalysisTab):
         except Exception:
             pass
 
+        try:
+            self.results_changed.emit()
+        except Exception:
+            pass
+
     def export_results(self):
         """Export NMF plots to CSV: components, fractions or RMS errors."""
         if not self.results:
@@ -1465,7 +1577,7 @@ class AnchorsModel:
         self.spectra = []         # list of 1D arrays
         self.labels = []          # list of strings
 
-        # Per-anchor parameters (same set as in XAS_curve_fitting_v1.0.py)
+        # Per-anchor parameters (same set as in this tool)
         self.params = []          # list of dicts with keys: dx,factor,broadening,background and constraint flags/within
 
         # Calibrated anchors sampled on a specific grid
@@ -1556,13 +1668,16 @@ class AnchorsCalibrateTab(QWidget):
 
         self._last_weights = None        # (n_comps, n_anchors_used)
         self._last_comp_indices = None   # list of comp indices
-        self._last_comp_rmse = None      # vector of RMSE per comp
+        self._last_comp_rmse = None
+        self._fit_curves = {}      # vector of RMSE per comp
 
-        root = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        splitter = QSplitter(Qt.Horizontal)
+        outer.addWidget(splitter, 1)
 
-        # Left: plots
-        left = QVBoxLayout()
-        root.addLayout(left, 3)
+        left_w = QWidget()
+        left = QVBoxLayout(left_w)
+        splitter.addWidget(left_w)
 
         top = QHBoxLayout()
         left.addLayout(top, 2)
@@ -1588,8 +1703,12 @@ class AnchorsCalibrateTab(QWidget):
         left.addWidget(self.canvas_err, 1)
 
         # Right: controls
-        right = QVBoxLayout()
-        root.addLayout(right, 1)
+        right_w = QWidget()
+        right = QVBoxLayout(right_w)
+        splitter.addWidget(right_w)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
 
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: #444;")
@@ -1600,32 +1719,39 @@ class AnchorsCalibrateTab(QWidget):
         self.btn_open.clicked.connect(self.open_anchors)
         btn_row.addWidget(self.btn_open)
 
-        self.btn_clear = QPushButton("Clear")
-        self.btn_clear.clicked.connect(self.clear_anchors)
-        btn_row.addWidget(self.btn_clear)
+
+        self.btn_run = QPushButton("Run calibration")
+        self.btn_run.clicked.connect(self.run_calibration)
+        btn_row.addWidget(self.btn_run)
         right.addLayout(btn_row)
 
         right.addWidget(QLabel("Anchors (used in calibration)"))
         self.list_anchors = QListWidget()
-        self.list_anchors.itemChanged.connect(lambda _: None)
+        self.list_anchors.itemChanged.connect(lambda _: self._plot_results_from_state())
         self.list_anchors.currentRowChanged.connect(self._on_anchor_selection_changed)
         right.addWidget(self.list_anchors, 1)
 
         right.addWidget(QLabel("MCR components to use (from last run)"))
         self.list_comps = QListWidget()
-        self.list_comps.itemChanged.connect(lambda _: self._plot_mcr_components())
+        self.list_comps.itemChanged.connect(lambda _: self._plot_results_from_state())
         right.addWidget(self.list_comps, 1)
+
+        right.addWidget(QLabel("Fitted components (from calibration)"))
+        self.list_fit = QListWidget()
+        self.list_fit.itemChanged.connect(lambda _: self._plot_results_from_state())
+        right.addWidget(self.list_fit, 1)
+
 
         grp_opt = QGroupBox("Optimize parameters")
         form_opt = QFormLayout(grp_opt)
         self.chk_opt_dx = QCheckBox("Optimize dX (shift)")
         self.chk_opt_dx.setChecked(True)
         self.chk_opt_bro = QCheckBox("Optimize broadening")
-        self.chk_opt_bro.setChecked(True)
+        self.chk_opt_bro.setChecked(False)
         self.chk_opt_fac = QCheckBox("Optimize factor (Y×)")
         self.chk_opt_fac.setChecked(False)
         self.chk_opt_bg = QCheckBox("Optimize background (integral)")
-        self.chk_opt_bg.setChecked(False)
+        self.chk_opt_bg.setChecked(True)
         form_opt.addRow(self.chk_opt_dx)
         form_opt.addRow(self.chk_opt_bro)
         form_opt.addRow(self.chk_opt_fac)
@@ -1700,25 +1826,32 @@ class AnchorsCalibrateTab(QWidget):
 
         right.addWidget(grp)
 
-        grp_fit = QGroupBox("Calibration run")
+        grp_fit = QGroupBox("")
         form_fit = QFormLayout(grp_fit)
         self.spin_max_outer = QSpinBox()
         self.spin_max_outer.setRange(10, 2000)
         self.spin_max_outer.setValue(200)
         form_fit.addRow("Max iterations:", self.spin_max_outer)
 
-        self.btn_run = QPushButton("Run calibration")
-        self.btn_run.clicked.connect(self.run_calibration)
-        form_fit.addRow(self.btn_run)
+        self.btn_clear = QPushButton("Clear")
+        self.btn_clear.clicked.connect(self.clear_anchors)
 
         self.btn_export = QPushButton("Export")
         self.btn_export.clicked.connect(self.export_results)
-        form_fit.addRow(self.btn_export)
 
         self.btn_help = QPushButton("Help")
         self.btn_help.clicked.connect(self.show_help)
-        form_fit.addRow(self.btn_help)
 
+        btns = QHBoxLayout()
+        btns.setContentsMargins(0, 0, 0, 0)
+        for b in (self.btn_clear, self.btn_export, self.btn_help):
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btns.addWidget(self.btn_clear, 1)
+        btns.addWidget(self.btn_export, 1)
+        btns.addWidget(self.btn_help, 1)
+        btns_w = QWidget()
+        btns_w.setLayout(btns)
+        form_fit.addRow(btns_w)
         right.addWidget(grp_fit)
 
         self._plot_empty()
@@ -1726,26 +1859,26 @@ class AnchorsCalibrateTab(QWidget):
     def get_help_text(self) -> str:
         return (
             "<b>Anchors – Calibrate</b><br><br>"
-            "Goal: starting from raw anchors (e.g. calculated Eu²⁺/Eu³⁺ spectra), build <b>calibrated (“good”) anchors</b> "
-            "that better match the experimental dataset’s energy scale and broadening.<br><br>"
-            "<b>How it works</b><br>"
-            "1) Run <b>MCR-ALS</b>. You get component spectra Comp1…CompK.<br>"
-            "2) Load raw anchors (CSV).<br>"
-            "3) Each selected MCR component is fitted as a <b>non-negative mixture</b> of transformed anchors. "
-            "The optimizer adjusts per-anchor parameters so the mixture fits all selected components simultaneously.<br><br>"
-            "<b>Parameters (same set as in XAS_curve_fitting_v1.0.py)</b><br>"
-            "• <b>dX</b> (eV): energy shift.<br>"
-            "• <b>Broadening σ</b> (eV): Gaussian broadening. σ≈0.2–0.6 eV is a typical starting range for many soft-XAS cases, "
-            "but it depends on resolution.<br>"
-            "• <b>Factor</b>: overall scaling of an anchor. Often unnecessary for area-normalized spectra, so it’s OFF by default.<br>"
-            "• <b>Background (integral)</b>: adds a monotonic background proportional to the anchor’s cumulative integral. Usually OFF.<br><br>"
-            "<b>Optimize parameters</b><br>"
-            "To keep calibration stable, only dX and broadening are optimized by default. Enable Factor/Background only if you need them.<br><br>"
+            "Goal: starting from raw anchors (e.g. reference or theoretical spectra for distinct chemical states), build <b>calibrated (“good”) anchors</b> "
+            "that better match the experimental dataset’s energy scale and background, and then use them in ‘Anchors – Apply’.<br><br>"
+            "<b>Typical workflow</b><br>"
+            "1) Run <b>PCA</b> to estimate a suitable number of components.<br>"
+            "2) Run <b>NMF</b> and/or <b>MCR-ALS</b> to obtain component spectra Comp1…CompK.<br>"
+            "3) Load raw anchors (CSV).<br>"
+            "4) Fit each selected component as a <b>non-negative mixture</b> of transformed anchors. Selected per-anchor parameters can be optimized to improve agreement.<br><br>"
+            "<b>Adjustable parameters</b><br>"
+            "• <b>dX</b> (eV): energy shift. Often the most important correction.<br>"
+            "• <b>Background (integral)</b>: adds a smooth monotonic background proportional to the anchor’s cumulative integral. "
+            "This is especially useful for theoretical anchors that may lack an experimental background contribution.<br>"
+            "• <b>Broadening σ</b> (eV): Gaussian broadening. Can help in some cases, but it is <b>not</b> optimized by default.<br>"
+            "• <b>Factor</b>: overall scaling of an anchor. Usually least relevant for area-normalized data and is OFF by default.<br><br>"
+            "<b>Optimization toggles</b><br>"
+            "For stability, only <b>dX</b> and <b>Background</b> are optimized by default. Enable broadening only when justified; enable Factor rarely.<br><br>"
             "<b>Constraints “within ±”</b><br>"
             "If enabled for a parameter, it is constrained to stay within ±(within) around the current value during the fit.<br><br>"
             "<b>Outputs</b><br>"
             "• Components plot: selected MCR components and their best mixtures of anchors.<br>"
-            "• Anchors plot: calibrated (“good”) anchors on the MCR energy grid (these will be used by ‘Anchors – Apply’).<br>"
+            "• Anchors plot: calibrated (“good”) anchors on the MCR energy grid (used by ‘Anchors – Apply’).<br>"
             "• Error plot: RMSE per selected component."
         )
 
@@ -1785,15 +1918,16 @@ class AnchorsCalibrateTab(QWidget):
         self.canvas_anch.draw()
 
         self.ax_err.clear()
-        self.ax_err.set_title("RMSE")
+        self.ax_err.set_title("RMS errors")
         self.ax_err.set_xlabel("Index")
-        self.ax_err.set_ylabel("RMSE")
+        self.ax_err.set_ylabel("RMS error")
         self.ax_err.grid(True, which="both", alpha=0.5, linewidth=0.8)
         self.canvas_err.draw()
 
     def _refresh_components_list(self):
         self.list_comps.blockSignals(True)
         self.list_comps.clear()
+        self.list_fit.clear()
         S = self.mcr_tab.results.get("S", None)
         if S is None:
             self.list_comps.blockSignals(False)
@@ -1810,29 +1944,10 @@ class AnchorsCalibrateTab(QWidget):
         """Refresh component list and plot when MCR-ALS results change."""
         self._refresh_components_list()
         self._plot_mcr_components()
-        self._plot_mcr_components()
 
     def _plot_mcr_components(self):
-        """Plot the latest MCR components on the component canvas (no calibration yet)."""
-        S = self.mcr_tab.results.get("S", None)
-        e = self.mcr_tab.results.get("energy", None)
-        if S is None or e is None:
-            self._plot_empty()
-            return
-
-        comp_idx = self._selected_comp_indices()
-        if len(comp_idx) == 0:
-            comp_idx = list(range(S.shape[0]))
-
-        self.ax_comp.clear()
-        for i in comp_idx:
-            self.ax_comp.plot(e, S[i], label=f"Comp {i+1}")
-        self.ax_comp.set_title("Latest MCR-ALS components")
-        self.ax_comp.set_xlabel("Photon energy (eV)")
-        self.ax_comp.set_ylabel("XAS (arb.)")
-        self.ax_comp.legend(fontsize=8)
-        self.ax_comp.grid(True, which="both", alpha=0.5, linewidth=0.8)
-        self.canvas_comp.draw()
+        """Plot using unified plotting logic."""
+        self._plot_results_from_state()
 
     def open_anchors(self):
         dialog = QFileDialog(self)
@@ -1866,25 +1981,126 @@ class AnchorsCalibrateTab(QWidget):
         self.lbl_status.setText(f"Loaded {len(self.anchors.labels)} anchor(s).")
 
         self._refresh_components_list()
+        # Plot using unified plotting (unique anchor colors)
+        self._plot_results_from_state()
 
-        # Plot raw anchors
+    def _comp_item_by_index(self, comp_index):
+        """Return QListWidgetItem for 'Comp {i}' if present, else None."""
+        for r in range(self.list_comps.count()):
+            it = self.list_comps.item(r)
+            if it and it.text().strip() == f"Comp {comp_index+1}":
+                return it
+        return None
+
+    def _fit_item_by_index(self, comp_index):
+        if not hasattr(self, "list_fit"):
+            return None
+        for r in range(self.list_fit.count()):
+            it = self.list_fit.item(r)
+            if it and it.data(Qt.UserRole) == comp_index:
+                return it
+        return None
+
+    def _is_comp_visible(self, comp_index):
+        it = self._comp_item_by_index(comp_index)
+        return (it is None) or (it.checkState() == Qt.Checked)
+
+    def _is_fit_visible(self, comp_index):
+        it = self._fit_item_by_index(comp_index)
+        return (it is not None) and (it.checkState() == Qt.Checked)
+
+    def _anchor_color(self, j):
+        """Anchor colors from Matplotlib 'tab10' colormap."""
+        try:
+            from matplotlib import cm
+            cmap = cm.get_cmap("tab10")
+            return cmap((j + 2) % 10)
+        except Exception:
+            # Fallback: return None to let Matplotlib choose default cycle
+            return None
+
+
+
+    def _comp_color(self, comp_index):
+        from matplotlib import cm
+        cmap = cm.get_cmap("tab10")
+        return cmap(comp_index % cmap.N)
+
+    def _plot_results_from_state(self):
+        """Replot components + fitted components (if available) and anchors using checkbox state."""
+        S = self.mcr_tab.results.get("S", None)
+        e = self.mcr_tab.results.get("energy", None)
+        if S is None or e is None:
+            self._plot_empty()
+            return
+
+        # --- Components canvas ---
+        self.ax_comp.clear()
+
+        # Plot original components that are checked
+        for ci in range(S.shape[0]):
+            if not self._is_comp_visible(ci):
+                continue
+            self.ax_comp.plot(e, S[ci], color=self._comp_color(ci), label=f"Comp {ci+1}")
+
+        # Plot fitted components (dashed) if available & checked
+        if getattr(self, "_fit_curves", None):
+            for ci, yhat in self._fit_curves.items():
+                if self._is_fit_visible(ci):
+                    self.ax_comp.plot(e, yhat, linestyle="--", color=self._comp_color(ci), label=f"Fit {ci+1}")
+
+        self.ax_comp.set_title("MCR components and fitted components")
+        self.ax_comp.set_xlabel("Photon energy (eV)")
+        self.ax_comp.set_ylabel("XAS (arb.)")
+        self.ax_comp.grid(True, which="both", alpha=0.5, linewidth=0.8)
+        if self.ax_comp.lines:
+            self.ax_comp.legend(fontsize=8)
+        self.canvas_comp.draw()
+
+        # --- Anchors canvas ---
         self.ax_anch.clear()
-        for i in range(len(self.anchors.labels)):
-            self.ax_anch.plot(self.anchors.energies[i], self.anchors.spectra[i], label=self.anchors.labels[i])
-        self.ax_anch.set_title("Raw anchors (before calibration)")
+        if self.anchors.good_energy is not None and self.anchors.good_spectra is not None:
+            x = self.anchors.good_energy
+            labels_used = [self.anchors.labels[j] for j in self._selected_anchor_indices()]
+            for j, lab in enumerate(labels_used):
+                self.ax_anch.plot(x, self.anchors.good_spectra[j, :], color=self._anchor_color(j), label=str(lab))
+            self.ax_anch.set_title("Calibrated ('good') anchors on MCR grid")
+        else:
+            for j in range(len(self.anchors.labels)):
+                self.ax_anch.plot(self.anchors.energies[j], self.anchors.spectra[j], color=self._anchor_color(j), label=str(self.anchors.labels[j]))
+            self.ax_anch.set_title("Raw anchors (before calibration)")
+
         self.ax_anch.set_xlabel("Photon energy (eV)")
         self.ax_anch.set_ylabel("XAS (arb.)")
-        self.ax_anch.legend(fontsize=8)
         self.ax_anch.grid(True, which="both", alpha=0.5, linewidth=0.8)
+        if self.ax_anch.lines:
+            self.ax_anch.legend(fontsize=8)
         self.canvas_anch.draw()
+
+        # --- Error canvas ---
+        self.ax_err.clear()
+        if getattr(self, "_last_comp_rmse", None) is not None:
+            rmse = self._last_comp_rmse
+            self.ax_err.scatter(np.arange(1, len(rmse)+1), rmse)
+            self.ax_err.set_title("RMS errors per used component")
+            self.ax_err.set_xlabel("Component (selected order)")
+            self.ax_err.set_ylabel("RMS error")
+        else:
+            self.ax_err.set_title("RMS errors per component")
+            self.ax_err.set_xlabel("Component")
+            self.ax_err.set_ylabel("RMS error")
+        self.ax_err.grid(True, which="both", alpha=0.5, linewidth=0.8)
+        self.canvas_err.draw()
 
     def clear_anchors(self):
         self.anchors.clear()
         self.list_anchors.clear()
         self.list_comps.clear()
+        self.list_fit.clear()
         self._last_weights = None
         self._last_comp_indices = None
         self._last_comp_rmse = None
+        self._fit_curves = {}
         self.lbl_status.setText("Cleared.")
         self._plot_empty()
         try:
@@ -2171,6 +2387,16 @@ class AnchorsCalibrateTab(QWidget):
             par["broadening"] = float(max(0.0, p_best[4*i+2]))
             par["background"] = float(max(0.0, p_best[4*i+3]))
             good_params.append(par)
+            # Update the editable anchor parameters so the GUI shows the optimized values
+            try:
+                self.anchors.params[aidx].update({
+                    'dx': par['dx'],
+                    'factor': par['factor'],
+                    'broadening': par['broadening'],
+                    'background': par['background'],
+                })
+            except Exception:
+                pass
             good_spectra[i, :] = transform_curve_to_grid(
                 self.anchors.energies[aidx], self.anchors.spectra[aidx], x_target,
                 dx=par["dx"], factor=par["factor"], broadening=par["broadening"], background=par["background"]
@@ -2179,6 +2405,12 @@ class AnchorsCalibrateTab(QWidget):
         self.anchors.good_energy = x_target.copy()
         self.anchors.good_spectra = good_spectra
         self.anchors.good_params = good_params
+
+        # Refresh parameter editor for the currently selected anchor (shows optimized values)
+        try:
+            self._load_anchor_editor_from_model(self.list_anchors.currentRow())
+        except Exception:
+            pass
 
         self._last_weights = weights
         self._last_comp_indices = comp_idx
@@ -2195,37 +2427,26 @@ class AnchorsCalibrateTab(QWidget):
         self._plot_results(comp_idx, S_sel, A_best, weights, rmse)
 
     def _plot_results(self, comp_idx, S_sel, A, W, rmse):
-        x = self.anchors.good_energy
-        self.ax_comp.clear()
+        # Store fitted curves per original component index
+        self._fit_curves = {}
         for r in range(S_sel.shape[0]):
-            y = S_sel[r, :]
-            yhat = A @ W[r, :]
-            self.ax_comp.plot(x, y, label=f"Comp {comp_idx[r]+1}")
-            self.ax_comp.plot(x, yhat, linestyle="--", label=f"Fit {comp_idx[r]+1}")
-        self.ax_comp.set_title("MCR components vs best anchor mixtures")
-        self.ax_comp.set_xlabel("Photon energy (eV)")
-        self.ax_comp.set_ylabel("XAS (arb.)")
-        self.ax_comp.grid(True, which="both", alpha=0.5, linewidth=0.8)
-        self.ax_comp.legend(fontsize=8)
-        self.canvas_comp.draw()
+            ci = int(comp_idx[r])
+            self._fit_curves[ci] = (A @ W[r, :]).copy()
 
-        self.ax_anch.clear()
-        for i, lab in enumerate([self.anchors.labels[j] for j in self._selected_anchor_indices()]):
-            self.ax_anch.plot(x, self.anchors.good_spectra[i, :], label=f"{lab}")
-        self.ax_anch.set_title("Calibrated ('good') anchors on MCR grid")
-        self.ax_anch.set_xlabel("Photon energy (eV)")
-        self.ax_anch.set_ylabel("XAS (arb.)")
-        self.ax_anch.grid(True, which="both", alpha=0.5, linewidth=0.8)
-        self.ax_anch.legend(fontsize=8)
-        self.canvas_anch.draw()
+        # Populate fitted-components list with checkboxes
+        self.list_fit.blockSignals(True)
+        self.list_fit.clear()
+        for r in range(S_sel.shape[0]):
+            ci = int(comp_idx[r])
+            item = QListWidgetItem(f"Fit {ci+1}", self.list_fit)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            item.setData(Qt.UserRole, ci)
+        self.list_fit.blockSignals(False)
 
-        self.ax_err.clear()
-        self.ax_err.plot(np.arange(1, len(rmse)+1), rmse, marker="o")
-        self.ax_err.set_title("RMSE per used component")
-        self.ax_err.set_xlabel("Component (selected order)")
-        self.ax_err.set_ylabel("RMSE")
-        self.ax_err.grid(True, which="both", alpha=0.5, linewidth=0.8)
-        self.canvas_err.draw()
+        # Store RMSE and replot everything based on current checkbox state
+        self._last_comp_rmse = rmse
+        self._plot_results_from_state()
 
     def get_good_anchors(self):
         """Return (energy, spectra, labels) for good anchors, or (None, None, None)."""
@@ -2308,12 +2529,15 @@ class AnchorsApplyTab(QWidget):
         except Exception:
             pass
 
-        self.results = dict(C=None, Xhat=None, rmse=None, energy=None, labels=None, sample_labels=None)
+        self.results = dict(C=None, Xhat=None, rmse=None, scales=None, energy=None, labels=None, sample_labels=None)
 
-        root = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        splitter = QSplitter(Qt.Horizontal)
+        outer.addWidget(splitter, 1)
 
-        left = QVBoxLayout()
-        root.addLayout(left, 3)
+        left_w = QWidget()
+        left = QVBoxLayout(left_w)
+        splitter.addWidget(left_w)
 
         top = QHBoxLayout()
         left.addLayout(top, 2)
@@ -2338,8 +2562,12 @@ class AnchorsApplyTab(QWidget):
         self.ax_err = self.fig_err.add_subplot(111)
         left.addWidget(self.canvas_err, 1)
 
-        right = QVBoxLayout()
-        root.addLayout(right, 1)
+        right_w = QWidget()
+        right = QVBoxLayout(right_w)
+        splitter.addWidget(right_w)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
 
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: #444;")
@@ -2349,23 +2577,56 @@ class AnchorsApplyTab(QWidget):
         self.chk_closure.setChecked(True)
         right.addWidget(self.chk_closure)
 
+        self.chk_scale_overlay = QCheckBox("Closure + best scale for overlay")
+        self.chk_scale_overlay.setChecked(True)
+        self.chk_scale_overlay.setToolTip("Keep coefficients as fractions (sum=1), but scale the reconstructed curve to best match the raw spectrum amplitude.")
+        right.addWidget(self.chk_scale_overlay)
+
+        # Keep the "best scale" option logically tied to Closure (fractions)
+        self.chk_scale_overlay.setEnabled(self.chk_closure.isChecked())
+
+        def _on_closure_toggled(state):
+            enabled = bool(state)
+            self.chk_scale_overlay.setEnabled(enabled)
+            if not enabled:
+                self.chk_scale_overlay.setChecked(False)
+
+        def _on_scale_toggled(state):
+            if bool(state) and (not self.chk_closure.isChecked()):
+                # If user requests "Closure + best scale", automatically enable Closure
+                self.chk_closure.setChecked(True)
+
+        self.chk_closure.toggled.connect(_on_closure_toggled)
+        self.chk_scale_overlay.toggled.connect(_on_scale_toggled)
+
         self.btn_run = QPushButton("Run anchor fit on selected spectra")
         self.btn_run.clicked.connect(self.run_apply)
         right.addWidget(self.btn_run)
 
         self.btn_export = QPushButton("Export")
         self.btn_export.clicked.connect(self.export_results)
-        right.addWidget(self.btn_export)
+
+        self.btn_clear = QPushButton("Clear")
+        self.btn_clear.clicked.connect(self.clear_apply)
+
+        self.btn_help = QPushButton("Help")
+        self.btn_help.clicked.connect(self.show_help)
+
+        btns = QHBoxLayout()
+        btns.setContentsMargins(0, 0, 0, 0)
+        for b in (self.btn_clear, self.btn_export, self.btn_help):
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btns.addWidget(self.btn_clear, 1)
+        btns.addWidget(self.btn_export, 1)
+        btns.addWidget(self.btn_help, 1)
+        btns_w = QWidget()
+        btns_w.setLayout(btns)
+        right.addWidget(btns_w)
 
         right.addWidget(QLabel("Show fit for sample:"))
         self.cmb_sample = QComboBox()
         self.cmb_sample.currentIndexChanged.connect(self._update_fit_plot)
         right.addWidget(self.cmb_sample)
-
-        self.btn_help = QPushButton("Help")
-        self.btn_help.clicked.connect(self.show_help)
-        right.addWidget(self.btn_help)
-
         right.addStretch(1)
 
         self._plot_empty()
@@ -2377,7 +2638,7 @@ class AnchorsApplyTab(QWidget):
             "This tab uses calibrated (“good”) anchors from <b>Anchors – Calibrate</b> and fits each selected spectrum "
             "as a <b>non-negative mixture</b> of those anchors.<br><br>"
             "<b>Typical use</b><br>"
-            "• If you have two anchors (e.g. Eu²⁺ and Eu³⁺), the resulting concentrations can be interpreted as the best "
+            "• If you have two anchors (e.g. two reference states), the resulting concentrations can be interpreted as the best "
             "non-negative mixing coefficients that reproduce each spectrum.<br><br>"
             "<b>Controls</b><br>"
             "• <b>Closure</b>: after NNLS, concentrations are normalized to sum to 1 for each spectrum. "
@@ -2387,6 +2648,23 @@ class AnchorsApplyTab(QWidget):
             "• Concentrations plot: anchor coefficients across the selected spectra.<br>"
             "• Error plot: RMSE per spectrum."
         )
+
+    def clear_apply(self):
+        """Clear results on this tab (keeps calibrated anchors preview)."""
+        self.results = dict(C=None, Xhat=None, rmse=None, scales=None, energy=None, labels=None, sample_labels=None)
+        try:
+            self.cmb_sample.blockSignals(True)
+            self.cmb_sample.clear()
+            self.cmb_sample.blockSignals(False)
+        except Exception:
+            pass
+        try:
+            self.lbl_status.setText("Cleared. (Calibrated anchors are kept.)")
+        except Exception:
+            pass
+        # Clear plots, then restore anchor preview
+        self._plot_empty()
+        self.refresh_preview()
 
     def show_help(self):
         dlg = QDialog(self)
@@ -2424,9 +2702,9 @@ class AnchorsApplyTab(QWidget):
         self.canvas_C.draw()
 
         self.ax_err.clear()
-        self.ax_err.set_title("RMSE per spectrum")
+        self.ax_err.set_title("RMS errors per spectrum")
         self.ax_err.set_xlabel("Sample index")
-        self.ax_err.set_ylabel("RMSE")
+        self.ax_err.set_ylabel("RMS error")
         self.ax_err.grid(True, which="both", alpha=0.5, linewidth=0.8)
         self.canvas_err.draw()
 
@@ -2434,13 +2712,23 @@ class AnchorsApplyTab(QWidget):
         """Plot calibrated ('good') anchors (if available) even before running the per-spectrum fit."""
         eA, SA, labelsA = self.calibrate_tab.get_good_anchors()
         self.ax_fit.clear()
-        if eA is not None and SA is not None and SA.size > 0:
+
+        has_good = (eA is not None) and (SA is not None) and getattr(SA, "size", 0) > 0 and (labelsA is not None)
+        if has_good:
             for j, lab in enumerate(labelsA):
-                self.ax_fit.plot(eA, SA[j, :], label=str(lab))
+                try:
+                    col = self.calibrate_tab._anchor_color(j)
+                except Exception:
+                    col = None
+                if col is None:
+                    self.ax_fit.plot(eA, SA[j, :], label=str(lab))
+                else:
+                    self.ax_fit.plot(eA, SA[j, :], color=col, label=str(lab))
             self.ax_fit.set_title("Calibrated ('good') anchors")
             self.ax_fit.legend(fontsize=8)
         else:
             self.ax_fit.set_title("No calibrated anchors yet (run 'Anchors – Calibrate')")
+
         self.ax_fit.set_xlabel("Photon energy (eV)")
         self.ax_fit.set_ylabel("XAS (arb.)")
         self.ax_fit.grid(True, which="both", alpha=0.5, linewidth=0.8)
@@ -2481,22 +2769,33 @@ class AnchorsApplyTab(QWidget):
         # NNLS for each spectrum
         C = np.zeros((n, p), dtype=float)
         rmse = np.zeros(n, dtype=float)
+        scales = np.ones(n, dtype=float)
         for i in range(n):
             y = X[i, :]
             c = nnls_solve(A, y)
+            # Closure turns NNLS coefficients into fractions (sum=1)
             if self.chk_closure.isChecked():
                 s = float(np.sum(c))
                 if s > 0:
                     c = c / s
+                # Optional: compute best global scale for overlay (does NOT change coefficients)
+                if getattr(self, 'chk_scale_overlay', None) is not None and self.chk_scale_overlay.isChecked():
+                    yhat0 = A @ c
+                    denom = float(np.dot(yhat0, yhat0))
+                    if denom > 0:
+                        scales[i] = float(np.dot(y, yhat0) / denom)
+                    else:
+                        scales[i] = 1.0
             C[i, :] = c
-            yhat = A @ c
+            yhat = (scales[i] * (A @ c))
             rmse[i] = float(np.sqrt(np.mean((y - yhat) ** 2)))
 
-        Xhat = C @ A.T  # (n,m)
+        Xhat = (C @ A.T) * scales[:, None]  # (n,m) scaled overlay fit when enabled
 
-        self.results = dict(C=C, Xhat=Xhat, rmse=rmse, energy=energy, labels=labelsA, sample_labels=sample_labels)
+        self.results = dict(C=C, Xhat=Xhat, rmse=rmse, scales=scales, energy=energy, labels=labelsA, sample_labels=sample_labels)
 
-        self.lbl_status.setText(f"Anchor fit done. n={n} spectra, anchors={p}.")
+        scale_note = " (overlay scaled)" if (self.chk_closure.isChecked() and getattr(self, "chk_scale_overlay", None) is not None and self.chk_scale_overlay.isChecked()) else ""
+        self.lbl_status.setText(f"Anchor fit done. n={n} spectra, anchors={p}.{scale_note}")
         self._populate_sample_selector(sample_labels)
         self._plot_concentrations(C, labelsA)
         self._plot_errors(rmse)
@@ -2540,7 +2839,14 @@ class AnchorsApplyTab(QWidget):
         self.ax_C.clear()
         x = np.arange(C.shape[0])
         for j, lab in enumerate(labels):
-            self.ax_C.plot(x, C[:, j], marker="o", label=str(lab))
+            try:
+                col = self.calibrate_tab._anchor_color(j)
+            except Exception:
+                col = None
+            if col is None:
+                self.ax_C.plot(x, C[:, j], marker="o", label=str(lab))
+            else:
+                self.ax_C.plot(x, C[:, j], marker="o", color=col, label=str(lab))
         self.ax_C.set_title("Anchor concentrations (NNLS coefficients)")
         self.ax_C.set_xlabel("Selected spectra (index in selection)")
         self.ax_C.set_ylabel("Coefficient")
@@ -2550,10 +2856,10 @@ class AnchorsApplyTab(QWidget):
 
     def _plot_errors(self, rmse):
         self.ax_err.clear()
-        self.ax_err.plot(np.arange(len(rmse)), rmse, marker="o")
-        self.ax_err.set_title("RMSE per selected spectrum")
+        self.ax_err.scatter(np.arange(len(rmse)), rmse)
+        self.ax_err.set_title("RMS errors per selected spectrum")
         self.ax_err.set_xlabel("Selected spectra (index in selection)")
-        self.ax_err.set_ylabel("RMSE")
+        self.ax_err.set_ylabel("RMS error")
         self.ax_err.grid(True, which="both", alpha=0.5, linewidth=0.8)
         self.canvas_err.draw()
 
@@ -2596,6 +2902,8 @@ class AnchorsApplyTab(QWidget):
             if labelsA is None:
                 labelsA = [f"Anchor{j+1}" for j in range(C.shape[1])]
             data = {"SampleIndex": idx, "SampleLabel": sample_labels}
+            if self.results.get("scales") is not None:
+                data["Scale"] = np.asarray(self.results["scales"], dtype=float)
             for j, lab in enumerate(labelsA):
                 data[str(lab)] = C[:, j]
             df = pd.DataFrame(data)
@@ -2622,8 +2930,9 @@ class AnchorsApplyTab(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("XAS PCA → NMF → MCR-ALS → Anchors (CSV) v1.14")
-        self.resize(1280, 800)
+        self.setWindowTitle("XAS data decomposition")
+        # Default placement/size when launched from the main app
+        self.setGeometry(100, 30, 1550, 640)
 
         self.model = DataModel()
         self.tabs = QTabWidget()
@@ -2636,7 +2945,7 @@ class MainWindow(QMainWindow):
         self.tab_anchors_cal = AnchorsCalibrateTab(self.model, self.tab_mcr)
         self.tab_anchors_apply = AnchorsApplyTab(self.model, self.tab_anchors_cal)
 
-        self.tabs.addTab(self.tab_data, "Data (CSV)")
+        self.tabs.addTab(self.tab_data, "Data")
         self.tabs.addTab(self.tab_pca, "PCA")
         self.tabs.addTab(self.tab_nmf, "NMF")
         self.tabs.addTab(self.tab_mcr, "MCR-ALS")
@@ -2644,11 +2953,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_anchors_apply, "Anchors – Apply")
 
         # Refresh the component list in the calibration tab when switching to it
-        if hasattr(self, '_on_tab_changed'):
-            self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
-
-    
     def set_dataset(self, x, ys, labels):
         """Inject a prepared dataset from the main FlexPES app.
 
@@ -2721,15 +3027,19 @@ class MainWindow(QMainWindow):
             pass
 
 
-def _on_tab_changed(self, idx):
+    def _on_tab_changed(self, idx):
+        """Refresh dependent tabs when the user switches tabs."""
         try:
+            # Ensure anchor calibration sees the latest MCR components
             if self.tabs.tabText(idx).startswith('Anchors'):
                 self.tab_anchors_cal.on_mcr_results_updated()
         except Exception:
             pass
 
+
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("XAS data decomposition")
     w = MainWindow()
     w.show()
     sys.exit(app.exec_())
