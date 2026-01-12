@@ -20,12 +20,14 @@ import shutil
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
+# The main application currently uses PyQt5 throughout. Prefer PyQt5 even if
+# PyQt6 is also installed to avoid mixed-binding crashes.
 try:
-    from PyQt6 import QtWidgets, QtCore, QtGui  # type: ignore
-    _QT6 = True
-except Exception:
     from PyQt5 import QtWidgets, QtCore, QtGui  # type: ignore
     _QT6 = False
+except Exception:  # pragma: no cover
+    from PyQt6 import QtWidgets, QtCore, QtGui  # type: ignore
+    _QT6 = True
 
 
 ROLE_ORDER = ["TEY", "PEY", "TFY", "PFY", "I0", "Energy"]

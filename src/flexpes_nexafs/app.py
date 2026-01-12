@@ -1,9 +1,26 @@
+"""Application entry point.
+
+Important: the rest of this package currently uses **PyQt5** (including the
+Matplotlib Qt backend import in ``ui.py``). If both PyQt6 and PyQt5 are
+installed, importing PyQt6 here would create a *PyQt6* QApplication, while the
+UI constructs *PyQt5* widgets. That mismatch triggers the classic runtime
+crash:
+
+    QWidget: Must construct a QApplication before a QWidget
+
+So we deliberately prefer PyQt5 here.
+"""
+
+from __future__ import annotations
+
 try:
-    from PyQt6 import QtWidgets  # type: ignore
-    from PyQt6 import QtCore  # type: ignore
-except Exception:
     from PyQt5 import QtWidgets  # type: ignore
     from PyQt5 import QtCore  # type: ignore
+except Exception as exc:  # pragma: no cover
+    # The UI code in this package imports PyQt5 directly, so PyQt5 is required.
+    raise ImportError(
+        "PyQt5 is required to run flexpes_nexafs (UI modules import PyQt5)."
+    ) from exc
 
 
 

@@ -185,3 +185,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed a startup crash in fresh environments (`QWidget: Must construct a QApplication before a QWidget`) by ensuring the Qt `QApplication` is created before importing and constructing the main UI (moved the `MainWindow` import inside `main()` in `app.py`)
+
+
+## [2.3.4] - 2026-01-12 
+
+### Fixed
+ - Ensure `QApplication` is created before importing/constructing the main UI (lazy-import `MainWindow` inside `main()`).
+ - Prevent mixed Qt bindings by preferring **PyQt5 consistently** across the package (avoids PyQt6 `QApplication` + PyQt5 widgets mismatch).
+

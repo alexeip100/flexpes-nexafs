@@ -188,10 +188,11 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         - Uses curated, descriptive tooltips for the main controls, then falls back to a light
           generic tooltip only when the control is self-explanatory.
         """
+        # Prefer PyQt5 to stay consistent with the rest of the UI.
         try:
-            from PyQt6.QtWidgets import QPushButton, QCheckBox, QComboBox  # type: ignore
-        except Exception:
             from PyQt5.QtWidgets import QPushButton, QCheckBox, QComboBox  # type: ignore
+        except Exception:  # pragma: no cover
+            from PyQt6.QtWidgets import QPushButton, QCheckBox, QComboBox  # type: ignore
 
         # Curated tooltips keyed by attribute name on self (stable and unambiguous).
         by_attr = {
@@ -284,11 +285,12 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
 
         # Place the main window near the top-left of the available screen area
         # (helps on small laptop screens).
+        # Prefer PyQt5 to avoid mixed Qt bindings.
         try:
-            from PyQt6 import QtGui  # type: ignore
-        except Exception:
+            from PyQt5 import QtGui  # type: ignore
+        except Exception:  # pragma: no cover
             try:
-                from PyQt5 import QtGui  # type: ignore
+                from PyQt6 import QtGui  # type: ignore
             except Exception:
                 QtGui = None  # type: ignore
         try:
@@ -306,7 +308,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             from . import __version__ as _PKG_VERSION
             from . import __date__ as _PKG_DATE
         except Exception:
-            _PKG_VERSION = "2.3.3"
+            _PKG_VERSION = "2.3.4"
             _PKG_DATE = "2026-01-12"
         self.VERSION_NUMBER = str(_PKG_VERSION)
         self.CREATION_DATETIME = str(_PKG_DATE)
