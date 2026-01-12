@@ -5,13 +5,15 @@ except Exception:
     from PyQt5 import QtWidgets  # type: ignore
     from PyQt5 import QtCore  # type: ignore
 
-from .ui import MainWindow
 
 
 def main():
     import sys
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+
+    # Import the main UI only after a QApplication exists.
+    from .ui import MainWindow
 
     # Force a consistent cross-platform Qt style.
     # (Fusion exists in both Qt5 and Qt6.)

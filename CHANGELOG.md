@@ -179,3 +179,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Decomposition app layout: splitters (draggable dividers) added on Data and Anchor tabs for flexible resizing of plots vs control panels
 - PCA button behavior: if no curves are selected, the decomposition app can still be launched (with an explicit OK/Cancel warning) and Open CSV is enabled
 - Decomposition app defaults: Auto-k is OFF by default and k defaults to 2
+
+
+## [2.3.3] – 2026-01-12
+
+### Fixed
+- Fixed a startup crash in fresh environments (`QWidget: Must construct a QApplication before a QWidget`) by ensuring the Qt `QApplication` is created before importing and constructing the main UI (moved the `MainWindow` import inside `main()` in `app.py`)
