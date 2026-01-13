@@ -4,10 +4,167 @@ import os
 import time
 import h5py
 import numpy as np
+import logging
+logger = logging.getLogger(__name__)
 from importlib.resources import files
 from PyQt5.QtWidgets import QApplication, QFileDialog, QTreeWidgetItem, QDialog
 from PyQt5.QtCore import Qt, QTimer
 class DataMixin:
+    def _ensure_raw_key_sources(self):
+        """Ensure the raw-plot key → sources map exists.
+
+        We use this to keep overlapping selection mechanisms independent:
+          - role checkboxes (All TEY/PEY/TFY/PFY)
+          - "All in channel" selection
+          - manual per-dataset checks in the HDF5 tree
+
+        Each plotted curve key ("abs_path##hdf5_path") can have multiple
+        sources. Removing one source should not remove the curve if another
+        source still requests it.
+        """
+        if not hasattr(self, "_raw_key_sources") or not isinstance(getattr(self, "_raw_key_sources"), dict):
+            self._raw_key_sources = {}
+
+    def _add_raw_key_source(self, key: str, source: str) -> None:
+        self._ensure_raw_key_sources()
+        try:
+            s = self._raw_key_sources.get(key)
+            if not isinstance(s, set):
+                s = set()
+            s.add(str(source))
+            self._raw_key_sources[key] = s
+        except Exception:
+            pass
+
+    def _remove_raw_key_source(self, key: str, source: str) -> bool:
+        """Remove a source from a key. Returns True if the key should be deleted."""
+        self._ensure_raw_key_sources()
+        try:
+            s = self._raw_key_sources.get(key)
+            if isinstance(s, set):
+                s.discard(str(source))
+                if not s:
+                    self._raw_key_sources.pop(key, None)
+                    return True
+                self._raw_key_sources[key] = s
+                return False
+            # If we had no tracking info, fall back to "delete".
+            return True
+        except Exception:
+            return True
+
+    def _iter_tree_items(self):
+        """Yield all QTreeWidgetItems from the main HDF5 structure tree."""
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return
+
+        def _walk(item):
+            yield item
+            for i in range(item.childCount()):
+                yield from _walk(item.child(i))
+
+        for i in range(tree.topLevelItemCount()):
+            yield from _walk(tree.topLevelItem(i))
+
+    def _normalize_hdf5_key(self, hdf5_key):
+        """Best-effort normalization of a stored HDF5 key to str.
+
+        This mirrors PlottingMixin._normalize_hdf5_key, but we keep a local
+        copy here to avoid cross-mixin import/order issues.
+        """
+        try:
+            if isinstance(hdf5_key, bytes):
+                return hdf5_key.decode("utf-8", errors="replace")
+            if isinstance(hdf5_key, str):
+                return hdf5_key
+            if isinstance(hdf5_key, tuple):
+                if len(hdf5_key) >= 1 and isinstance(hdf5_key[0], (str, bytes)):
+                    first = hdf5_key[0]
+                    if isinstance(first, bytes):
+                        first = first.decode("utf-8", errors="replace")
+                    if all(isinstance(x, (str, bytes)) for x in hdf5_key):
+                        parts = []
+                        for x in hdf5_key:
+                            if isinstance(x, bytes):
+                                x = x.decode("utf-8", errors="replace")
+                            x = (x or "").strip("/")
+                            if x:
+                                parts.append(x)
+                        if not parts:
+                            return ""
+                        path = "/".join(parts)
+                        if str(first).startswith("/"):
+                            path = "/" + path.lstrip("/")
+                        return path
+                    return str(first)
+                return str(hdf5_key)
+            return str(hdf5_key)
+        except Exception:
+            return str(hdf5_key)
+
+    def _uncheck_tree_items_for_filter(self, filter_str: str) -> None:
+        """Uncheck matching items in the left HDF5 tree.
+
+        Used to keep the tree state consistent when a bulk selection mechanism
+        removes curves.
+        """
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return
+        try:
+            tree.blockSignals(True)
+            for item in self._iter_tree_items() or []:
+                try:
+                    data = item.data(0, Qt.UserRole)
+                    if not isinstance(data, tuple) or len(data) != 2:
+                        continue
+                    _abs_path, hdf5_path = data
+                    hdf5_path = self._normalize_hdf5_key(hdf5_path)
+                    if not isinstance(hdf5_path, str):
+                        continue
+                    if filter_str and filter_str in hdf5_path and item.checkState(0) == Qt.Checked:
+                        item.setCheckState(0, Qt.Unchecked)
+                except Exception:
+                    continue
+        finally:
+            try:
+                tree.blockSignals(False)
+            except Exception:
+                pass
+
+    def clear_group_visibility(self, filter_str: str) -> None:
+        """Remove all curves matching filter_str, regardless of their source.
+
+        Also unchecks matching items in the left tree to keep UI consistent.
+        """
+        self._ensure_raw_key_sources()
+        try:
+            for key in list(getattr(self, "plot_data", {}).keys()):
+                try:
+                    parts = key.split("##", 1)
+                    if len(parts) != 2:
+                        continue
+                    _abs_path, hdf5_path = parts
+                    if filter_str and filter_str in hdf5_path:
+                        self.plot_data.pop(key, None)
+                        self.raw_visibility.pop(key, None)
+                        self._raw_key_sources.pop(key, None)
+                except Exception:
+                    continue
+        finally:
+            try:
+                self._uncheck_tree_items_for_filter(filter_str)
+            except Exception:
+                pass
+            try:
+                self.update_plot_raw()
+            except Exception:
+                pass
+            try:
+                self.update_pass_button_state()
+            except Exception:
+                pass
     def _open_h5_read(self, path, retries: int = 3):
         """
         Open HDF5 file for reading with SWMR and retry a few times if busy.
@@ -18,12 +175,12 @@ class DataMixin:
         for i in range(max(1, int(retries))):
             try:
                 # Try modern SWMR-compatible open
-                print("trying SWMR=true, locking=false")
+                logger.debug("trying SWMR=true, locking=false")
                 return h5py.File(path, "r", swmr=True, libver="latest", locking=False)
                 # return h5py.File(path, "r", libver="latest", locking=False)
             except TypeError as e:
                 # Older h5py: swmr/libver not supported; fall back safely
-                print(f"trying defaults.  Error: {e}")
+                logger.debug("trying defaults (TypeError): %s", e)
                 return h5py.File(path, "r")
             except OSError as e:
                 # Common transient case: file temporarily locked or being written
@@ -35,7 +192,7 @@ class DataMixin:
     
         # Final fallback: try without SWMR, even if locked=False only
         try:
-            print(f"trying locking=False, {last_error=}")
+            logger.debug("trying locking=False, last_error=%s", last_error)
             return h5py.File(path, "r", locking=False)
         except Exception as e:
             # Give up after retries
@@ -76,7 +233,7 @@ class DataMixin:
     
         return merged
 
-    def set_group_visibility(self, filter_str: str, visible: bool):
+    def set_group_visibility(self, filter_str: str, visible: bool, source: str = "group"):
         """
         Show or hide all 1D datasets across all opened HDF5 files whose HDF5
         relative path contains `filter_str` (typically the channel name).
@@ -96,6 +253,8 @@ class DataMixin:
               self._open_h5_read(path), self.update_plot_raw(), self.update_pass_button_state(),
               and dicts self.plot_data, self.raw_visibility.
         """
+        self._ensure_raw_key_sources()
+
         # Re-entrancy guard
         if getattr(self, "_in_set_group_visibility", False):
             return
@@ -132,11 +291,17 @@ class DataMixin:
                                         y = obj[()]
                                     except Exception:
                                         return
-                                    self.plot_data[key] = y
+                                    # Only populate y if absent; avoid clobbering existing data.
+                                    if key not in self.plot_data:
+                                        self.plot_data[key] = y
                                     self.raw_visibility[key] = True
+                                    self._add_raw_key_source(key, source)
                                 else:
-                                    self.plot_data.pop(key, None)
-                                    self.raw_visibility.pop(key, None)
+                                    # Remove only this source. Delete the key only if no sources remain.
+                                    should_delete = self._remove_raw_key_source(key, source)
+                                    if should_delete:
+                                        self.plot_data.pop(key, None)
+                                        self.raw_visibility.pop(key, None)
     
                             except Exception:
                                 # Ignore per-item errors; keep scanning
@@ -171,6 +336,11 @@ class DataMixin:
         self.file_label.setText("No file open")
         self.tree.clear()
         self.plot_data.clear()
+        try:
+            if hasattr(self, "_raw_key_sources"):
+                self._raw_key_sources.clear()
+        except Exception:
+            pass
         self.energy_cache.clear()
         self.raw_visibility.clear()
         self.update_plot_raw()
@@ -249,6 +419,11 @@ class DataMixin:
                 pass
             try:
                 self.raw_visibility.pop(key, None)
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "_raw_key_sources") and isinstance(getattr(self, "_raw_key_sources"), dict):
+                    self._raw_key_sources.pop(key, None)
             except Exception:
                 pass
 

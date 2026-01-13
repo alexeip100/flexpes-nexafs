@@ -187,9 +187,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed a startup crash in fresh environments (`QWidget: Must construct a QApplication before a QWidget`) by ensuring the Qt `QApplication` is created before importing and constructing the main UI (moved the `MainWindow` import inside `main()` in `app.py`)
 
 
-## [2.3.4] - 2026-01-12 
+## [2.3.4] – 2026-01-12 
 
 ### Fixed
  - Ensure `QApplication` is created before importing/constructing the main UI (lazy-import `MainWindow` inside `main()`).
  - Prevent mixed Qt bindings by preferring **PyQt5 consistently** across the package (avoids PyQt6 `QApplication` + PyQt5 widgets mismatch).
 
+
+## [2.3.5] – 2026-01-12
+
+### Fixed
+- UI state desynchronization between “Show all …” toggles / “All in channel” and the file-tree checkmarks is removed:
+  - no stale checkmarks,
+  - overlapping selections stay synchronized,
+  - changing/untoggling one selector no longer removes curves selected by another.
+- Keyboard navigation in the HDF5 tree now updates scalar/text display; selecting a group expands it instead of producing an error.
+- Channel setup: prevent saving a profile without an Energy channel; prevent duplicate channel assignments across roles.
+
+### Changed
+- Plot UX: curve colors no longer reshuffle when (de)selecting curves (colors remain stable).
+- Plotted Data default curve thickness set to an integer value (default = 2).
+- Processed-tab export tooltip wording updated to match single-curve export behavior.
+
+### Added
+- Confirmation dialog when enabling “Sum up” across multiple energy regions.

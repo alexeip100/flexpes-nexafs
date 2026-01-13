@@ -333,6 +333,50 @@ def get_usage_html() -> str:
 
 
 class PlottingMixin:
+    @staticmethod
+    def _normalize_hdf5_key(hdf5_key):
+        """Normalize an HDF5 access key to a string.
+
+        h5py expects group/dataset access keys to be bytes or str. In rare cases
+        the stored key can become a tuple (e.g. values from `.items()` or a tuple
+        of path segments). This helper converts such values into a usable HDF5
+        path string.
+        """
+        try:
+            if isinstance(hdf5_key, bytes):
+                return hdf5_key.decode("utf-8", errors="replace")
+            if isinstance(hdf5_key, str):
+                return hdf5_key
+            if isinstance(hdf5_key, tuple):
+                # Common case: (name, obj) coming from `.items()`.
+                if len(hdf5_key) >= 1 and isinstance(hdf5_key[0], (str, bytes)):
+                    first = hdf5_key[0]
+                    if isinstance(first, bytes):
+                        first = first.decode("utf-8", errors="replace")
+                    # If all elements are str/bytes, treat as path segments.
+                    if all(isinstance(x, (str, bytes)) for x in hdf5_key):
+                        parts = []
+                        for x in hdf5_key:
+                            if isinstance(x, bytes):
+                                x = x.decode("utf-8", errors="replace")
+                            x = (x or "").strip("/")
+                            if x:
+                                parts.append(x)
+                        if not parts:
+                            return ""
+                        path = "/".join(parts)
+                        # Preserve absolute path if the first part looked absolute.
+                        if str(first).startswith("/"):
+                            path = "/" + path.lstrip("/")
+                        return path
+                    return str(first)
+                # Fallback for odd tuple shapes.
+                return str(hdf5_key)
+            # Last resort.
+            return str(hdf5_key)
+        except Exception:
+            return str(hdf5_key)
+
     def shorten_label(self, hdf5_path: str) -> str:
         """Return a compact label like 'TEY in entry0001' from an HDF5 dataset path.
         Heuristics follow the old app_window.py behavior."""
@@ -492,6 +536,63 @@ class PlottingMixin:
             if getattr(line, "dataset_key", None) == key:
                 return line.get_color()
         return None
+
+    def _ensure_curve_color_map(self):
+        """Ensure persistent color mapping for raw/processed curves.
+
+        This prevents Matplotlib's color cycle from reassigning colors when curves
+        are temporarily hidden or removed from the selection.
+        """
+        if not hasattr(self, "_curve_color_map") or getattr(self, "_curve_color_map") is None:
+            self._curve_color_map = {}
+        if not hasattr(self, "_curve_color_cycle_idx") or getattr(self, "_curve_color_cycle_idx") is None:
+            self._curve_color_cycle_idx = 0
+
+    def _get_persistent_curve_color(self, key):
+        """Return a stable color for a given dataset key."""
+        self._ensure_curve_color_map()
+        try:
+            if key in self._curve_color_map and self._curve_color_map[key]:
+                return self._curve_color_map[key]
+        except Exception:
+            pass
+
+        # Pull Matplotlib's default color cycle (C0..)
+        try:
+            colors = plt.rcParams.get("axes.prop_cycle", None)
+            if colors is not None:
+                colors = colors.by_key().get("color", [])
+            else:
+                colors = []
+        except Exception:
+            colors = []
+        if not colors:
+            colors = [f"C{i}" for i in range(10)]
+
+        try:
+            used = set(v for v in self._curve_color_map.values() if v)
+        except Exception:
+            used = set()
+
+        # Prefer an unused color from the cycle, if available
+        base = int(getattr(self, "_curve_color_cycle_idx", 0) or 0)
+        chosen = None
+        for i in range(len(colors)):
+            c = colors[(base + i) % len(colors)]
+            if c not in used:
+                chosen = c
+                self._curve_color_cycle_idx = (base + i + 1) % len(colors)
+                break
+        if chosen is None:
+            chosen = colors[base % len(colors)]
+            self._curve_color_cycle_idx = (base + 1) % len(colors)
+
+        try:
+            self._curve_color_map[key] = chosen
+        except Exception:
+            pass
+        return chosen
+
 
     # ------------ Plotted tab helpers ------------
     def pass_to_plotted_no_clear(self):
@@ -686,7 +787,9 @@ class PlottingMixin:
 
                     # Add to plot + list
                     self.custom_labels[storage_key] = None
-                    line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>")
+                    # Use an integer default linewidth (2) so users can return to the initial look
+                    # using the simple size control (which only allows integers).
+                    line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>", linewidth=2.0)
                     self.plotted_curves.add(storage_key)
                     self.plotted_lines[storage_key] = line
                     self.original_line_data[storage_key] = (np.asarray(main_x).copy(), np.asarray(main_y).copy())
@@ -828,7 +931,9 @@ class PlottingMixin:
 
         # Add the curve to the plotted axes and list
         self.custom_labels[storage_key] = None
-        line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>")
+        # Use an integer default linewidth (2) so users can return to the initial look
+        # using the simple size control (which only allows integers).
+        line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>", linewidth=2.0)
         self.plotted_curves.add(storage_key)
         self.plotted_lines[storage_key] = line
 
@@ -909,7 +1014,8 @@ class PlottingMixin:
 
         # Register curve
         self.custom_labels[storage_key] = str(label)
-        line, = self.plotted_ax.plot(x_arr, y_arr, label=str(label))
+        # Reference curves use the same default linewidth as regular plotted curves.
+        line, = self.plotted_ax.plot(x_arr, y_arr, label=str(label), linewidth=2.0)
         self.plotted_curves.add(storage_key)
         self.plotted_lines[storage_key] = line
         self.original_line_data[storage_key] = (x_arr.copy(), y_arr.copy())
@@ -2357,6 +2463,11 @@ class PlottingMixin:
         self.region_states.clear()
         self.proc_region_states.clear()
         self.plot_data.clear()
+        try:
+            if hasattr(self, "_raw_key_sources"):
+                self._raw_key_sources.clear()
+        except Exception:
+            pass
         self.energy_cache.clear()
         self.cb_all_tey.setChecked(False)
         self.cb_all_pey.setChecked(False)
@@ -2457,12 +2568,13 @@ class PlottingMixin:
         if not isinstance(data, tuple) or len(data) != 2:
             return
         abs_path, hdf5_path = data
+        hdf5_path = self._normalize_hdf5_key(hdf5_path)
         if abs_path not in self.hdf5_files:
             return
 
         try:
             with self._open_h5_read(abs_path) as f:
-                if hdf5_path in f:
+                if hdf5_path and hdf5_path in f:
                     ds_obj = f[hdf5_path]
                     if isinstance(ds_obj, h5py.Dataset) and ds_obj.ndim == 1:
                         if getattr(ds_obj, "size", 0) == 0:
@@ -2477,10 +2589,23 @@ class PlottingMixin:
                         if item.checkState(0) == Qt.Checked:
                             self.plot_data[combined_label] = ds_obj[()]
                             self.raw_visibility[combined_label] = True
+                            # Track source so bulk toggles don't accidentally remove
+                            # manually selected curves.
+                            try:
+                                self._add_raw_key_source(combined_label, "tree")
+                            except Exception:
+                                pass
                         else:
-                            if combined_label in self.plot_data:
-                                del self.plot_data[combined_label]
-                            self.raw_visibility[combined_label] = False
+                            try:
+                                should_delete = self._remove_raw_key_source(combined_label, "tree")
+                            except Exception:
+                                should_delete = True
+                            if should_delete:
+                                self.plot_data.pop(combined_label, None)
+                                self.raw_visibility.pop(combined_label, None)
+                            else:
+                                # Still requested by another selection mechanism.
+                                self.raw_visibility[combined_label] = True
 
             self._filter_empty_plot_data()
             self.update_plot_raw()
@@ -2491,19 +2616,56 @@ class PlottingMixin:
             pass
 
     def display_data(self, item, column):
+        # Update scalar/text display for the *current* tree item (mouse or keyboard),
+        # and expand groups instead of trying to display them.
         if self.data_tabs.currentIndex() != 0:
+            return
+        if item is None:
             return
         data = item.data(0, Qt.UserRole)
         if not data:
             return
         abs_path, hdf5_path = data
+        hdf5_path = self._normalize_hdf5_key(hdf5_path)
+
         if abs_path not in self.hdf5_files:
             return
+
         try:
+            # Selecting the file root ("") or any group should just expand it.
+            if hdf5_path in (None, ""):
+                try:
+                    item.setExpanded(True)
+                    # Populate children immediately for keyboard navigation.
+                    if item.childCount() == 1 and item.child(0).text(0) == "(click to expand)":
+                        self.load_subtree(item)
+                except Exception:
+                    pass
+                try:
+                    self.scalar_display_raw.setText("")
+                except Exception:
+                    pass
+                return
+
             with self._open_h5_read(abs_path) as f:
                 if hdf5_path not in f:
                     return
-                arr = f[hdf5_path][()]
+                obj = f[hdf5_path]
+                if isinstance(obj, h5py.Group):
+                    try:
+                        item.setExpanded(True)
+                        if item.childCount() == 1 and item.child(0).text(0) == "(click to expand)":
+                            self.load_subtree(item)
+                    except Exception:
+                        pass
+                    try:
+                        self.scalar_display_raw.setText("")
+                    except Exception:
+                        pass
+                    return
+
+                # Dataset
+                arr = obj[()]
 
             # Scalars and 1D
             if isinstance(arr, np.ndarray) and arr.ndim in (0, 1):
@@ -2548,7 +2710,7 @@ class PlottingMixin:
             y_use = y_data[:mlen]
             if len(x_use) == 0:
                 continue
-            line, = ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path))
+            line, = ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path), color=self._get_persistent_curve_color(combined_label))
             line.dataset_key = combined_label
         ax.set_xlabel("Photon energy (eV)")
 
@@ -2581,7 +2743,7 @@ class PlottingMixin:
             y_use = processed_y[:mlen]
             if len(x_use) == 0:
                 continue
-            line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path))
+            line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path), color=self._get_persistent_curve_color(combined_label))
             line.dataset_key = combined_label
         self.proc_ax.set_xlabel("Photon energy (eV)")
 
@@ -3032,9 +3194,9 @@ class PlottingMixin:
                     yy = _p._proc_safe_post_normalize(self, x_use, yy, norm_mode)
                 except Exception:
                     pass
-                line, = self.proc_ax.plot(x_use, yy, label=self.shorten_label(hdf5_path))
+                line, = self.proc_ax.plot(x_use, yy, label=self.shorten_label(hdf5_path), color=self._get_persistent_curve_color(key))
             else:
-                line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path))
+                line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path), color=self._get_persistent_curve_color(combined_label))
                 self.proc_ax.plot(x_use, bg, linestyle="--", linewidth=1.2, alpha=0.65, color=line.get_color(), label="_bg")
             try:
                 line.dataset_key = key
@@ -3643,6 +3805,12 @@ class PlottingMixin:
         return background
 
     def change_curve_color(self, key, new_color):
+        # Persist user-picked colors across re-plotting (Raw/Processed).
+        try:
+            self._ensure_curve_color_map()
+            self._curve_color_map[key] = new_color
+        except Exception:
+            pass
         if key in self.plotted_lines:
             self.plotted_lines[key].set_color(new_color)
             self.update_legend()

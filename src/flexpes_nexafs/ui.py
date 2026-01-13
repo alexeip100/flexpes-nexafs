@@ -63,6 +63,15 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 self.update_legend()
         except Exception:
             pass
+    
+    def _on_tree_current_item_changed(self, current, previous=None):
+        """Keep scalar/text display in sync when navigating the HDF5 tree via keyboard."""
+        try:
+            if current is not None:
+                self.display_data(current, 0)
+        except Exception:
+            pass
+
     def _on_plotted_legend_mode_changed(self, _idx=0):
         """Qt slot: change legend behavior on Plotted Data panel."""
         try:
@@ -175,7 +184,12 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         if not pattern:
             return
         try:
-            self.set_group_visibility(pattern, checked)
+            # When enabling: tag as a role source so it can coexist with "All in channel".
+            if checked:
+                self.set_group_visibility(pattern, True, source=f"role:{role}")
+            else:
+                # When disabling: clear everything matching this role pattern (and uncheck tree).
+                self.clear_group_visibility(pattern)
         except Exception:
             pass
 
@@ -203,7 +217,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             "help_button": "Open the Usage help page",
             "setup_channels_button": "Configure channel mappings (TEY/PEY/TFY/PFY etc.) for the open files",
             "pass_button": "Pass selected processed curves to the Plotted Data panel",
-            "export_ascii_button": "Export selected curves to an ASCII text file",
+            "export_ascii_button": "Export selected curve to an ASCII text file",
             "load_reference_button": "Load a reference spectrum for comparison",
             "export_import_plotted_button": "Export or import plotted curves as CSV",
             "pca_plotted_button": "Send eligible plotted curves to the decomposition app (PCA/NMF/MCR). Requires Waterfall OFF and post-normalization = Area",
@@ -308,7 +322,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             from . import __version__ as _PKG_VERSION
             from . import __date__ as _PKG_DATE
         except Exception:
-            _PKG_VERSION = "2.3.4"
+            _PKG_VERSION = "2.3.5"
             _PKG_DATE = "2026-01-12"
         self.VERSION_NUMBER = str(_PKG_VERSION)
         self.CREATION_DATETIME = str(_PKG_DATE)
@@ -430,6 +444,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.tree.itemExpanded.connect(self.load_subtree)
         self.tree.itemChanged.connect(self.toggle_plot)
         self.tree.itemClicked.connect(self.display_data)
+        self.tree.currentItemChanged.connect(self._on_tree_current_item_changed)
         # Enable context menu on the HDF5 tree for per-file closing
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
@@ -561,7 +576,12 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.export_ascii_button.clicked.connect(self.export_ascii)
         self.pass_button.clicked.connect(self.pass_to_plotted_no_clear)
 
-        self.chk_sum.stateChanged.connect(self.update_plot_processed)
+        # Route through a handler so we can warn the user when summing curves
+        # across different energy regions.
+        if hasattr(self, "_on_sum_toggled"):
+            self.chk_sum.stateChanged.connect(self._on_sum_toggled)
+        else:
+            self.chk_sum.stateChanged.connect(self.update_plot_processed)
         self.chk_normalize.stateChanged.connect(self._on_normalize_toggled)
         self.combo_norm.currentIndexChanged.connect(self.update_plot_processed)
 
@@ -967,28 +987,54 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 self._in_all_channel_apply = True
     
                 if checked:
-                    # Load only the selected channel; clear previous active if different
+                    # Load only the selected channel; clear previous active (for this feature only) if different
                     if prev_active and prev_active != selected:
                         try:
-                            self.set_group_visibility(prev_active, False)
+                            self.set_group_visibility(prev_active, False, source=f"all_in_channel:{prev_active}")
                         except Exception:
                             pass
                     if selected:
-                        self.set_group_visibility(selected, True)
+                        self.set_group_visibility(selected, True, source=f"all_in_channel:{selected}")
                         self._last_all_channel_filter = selected
                 else:
-                    # Unchecked: clear selected, and also clear previous active if different
+                    # Unchecked: clear selected (and previously active) for this feature only.
                     if selected:
                         try:
-                            self.set_group_visibility(selected, False)
+                            self.set_group_visibility(selected, False, source=f"all_in_channel:{selected}")
                         except Exception:
                             pass
                     if prev_active and prev_active != selected:
                         try:
-                            self.set_group_visibility(prev_active, False)
+                            self.set_group_visibility(prev_active, False, source=f"all_in_channel:{prev_active}")
                         except Exception:
                             pass
                     self._last_all_channel_filter = None
+
+                    # If we just cleared a channel that corresponds to a role (TEY/PEY/TFY/PFY),
+                    # also uncheck the corresponding "All <role> data" checkbox so the UI state
+                    # reflects what is plotted.
+                    try:
+                        cleared = [c for c in [selected, prev_active] if isinstance(c, str) and c]
+                        for role, cb in [
+                            ("TEY", getattr(self, "cb_all_tey", None)),
+                            ("PEY", getattr(self, "cb_all_pey", None)),
+                            ("TFY", getattr(self, "cb_all_tfy", None)),
+                            ("PFY", getattr(self, "cb_all_pfy", None)),
+                        ]:
+                            if cb is None or not cb.isChecked():
+                                continue
+                            try:
+                                pat = str(self.channel_config.get_pattern(role) or "")
+                            except Exception:
+                                pat = ""
+                            if not pat:
+                                continue
+                            for c in cleared:
+                                if pat == c or (pat in c) or (c in pat):
+                                    cb.setChecked(False)
+                                    break
+                    except Exception:
+                        pass
     
             except Exception:
                 pass

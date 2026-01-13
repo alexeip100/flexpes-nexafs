@@ -252,6 +252,57 @@ class ProcessingMixin:
         self.combo_norm.setEnabled(state == Qt.Checked)
         self.update_plot_processed()
 
+    def _on_sum_toggled(self, state):
+        """Handle the "Sum up" checkbox.
+
+        If the user attempts to sum curves from more than one energy region,
+        show an explicit OK/Cancel warning. We still allow it (sometimes useful
+        for nearly identical regions with a few missing points), but we want the
+        intent to be explicit.
+        """
+        try:
+            if state == Qt.Checked:
+                # Determine how many distinct energy regions are currently visible.
+                regions = set()
+                visible = 0
+                plot_data = getattr(self, "plot_data", {}) or {}
+                raw_vis = getattr(self, "raw_visibility", {}) or {}
+                for combined_label in plot_data.keys():
+                    if not raw_vis.get(combined_label, True):
+                        continue
+                    parts = str(combined_label).split("##", 1)
+                    if len(parts) != 2:
+                        continue
+                    abs_path, hdf5_path = parts
+                    parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+                    regions.add(f"{abs_path}::{parent}")
+                    visible += 1
+
+                if visible > 1 and len(regions) > 1:
+                    from PyQt5.QtWidgets import QMessageBox
+                    ret = QMessageBox.question(
+                        self,
+                        "Sum across regions?",
+                        "You selected spectra from multiple energy regions.\n"
+                        "Summing them may be meaningless unless the regions overlap.\n\n"
+                        "Do you want to continue?",
+                        QMessageBox.Ok | QMessageBox.Cancel,
+                        QMessageBox.Cancel,
+                    )
+                    if ret != QMessageBox.Ok:
+                        # Revert without retriggering this handler.
+                        try:
+                            self.chk_sum.blockSignals(True)
+                            self.chk_sum.setChecked(False)
+                        finally:
+                            self.chk_sum.blockSignals(False)
+                        return
+        except Exception:
+            # Never block plotting due to warning logic.
+            pass
+
+        self.update_plot_processed()
+
     def _on_bg_subtract_toggled(self, state):
         """Enable/disable post‑normalisation combo and update plot."""
         # In Group BG mode, post-normalisation is intentionally locked (Area) regardless of Subtract BG toggle.

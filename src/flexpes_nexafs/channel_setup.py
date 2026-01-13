@@ -272,8 +272,10 @@ class ChannelSetupDialog(QtWidgets.QDialog):
             self.profile_combo.setEditText(self.manager.active_profile())
         row.addWidget(self.profile_combo, 1)
 
-        self.btn_delete = QtWidgets.QPushButton("Delete")
-        row.addWidget(self.btn_delete)
+        # Intuitive workflow: select a profile from the list and apply it using
+        # the button next to the list.
+        self.btn_use = QtWidgets.QPushButton("Use selected")
+        row.addWidget(self.btn_use)
         layout.addLayout(row)
 
         # Mapping file location (kept subtle to avoid distracting new users)
@@ -314,15 +316,15 @@ class ChannelSetupDialog(QtWidgets.QDialog):
         # Cancel: close dialog without applying the selected profile or saving edits
         self.btn_cancel = QtWidgets.QPushButton("Cancel")
 
-        # Use selected: apply the currently selected existing profile (no need to press Save)
-        self.btn_use = QtWidgets.QPushButton("Use selected")
+        # Delete profile
+        self.btn_delete = QtWidgets.QPushButton("Delete")
 
         # Save changes: persist edits to the current profile (with overwrite guard)
         self.btn_ok = QtWidgets.QPushButton("Save changes")
         self.btn_use.setDefault(True)
 
         btn_row.addWidget(self.btn_cancel)
-        btn_row.addWidget(self.btn_use)
+        btn_row.addWidget(self.btn_delete)
         btn_row.addWidget(self.btn_ok)
         layout.addLayout(btn_row)
 
@@ -473,6 +475,31 @@ class ChannelSetupDialog(QtWidgets.QDialog):
         raw: Dict[str, Union[str, List[str], None]] = {role: prof.get(role, None) for role in ROLE_ORDER}
         return self._normalized_mapping(raw)
 
+    def _find_duplicate_patterns(self, mapping: Dict[str, Union[str, List[str]]]) -> Dict[str, List[str]]:
+        """Return {pattern: [roles...]} for patterns assigned to more than one role.
+
+        We compare patterns case-insensitively after stripping whitespace.
+        """
+        pat_roles: Dict[str, set] = {}
+        for role, v in mapping.items():
+            vals: List[str]
+            if isinstance(v, list):
+                vals = [str(x) for x in v]
+            else:
+                vals = [str(v)]
+            for p in vals:
+                key = str(p).strip()
+                if not key:
+                    continue
+                k = key.lower()
+                pat_roles.setdefault(k, set()).add(role)
+
+        duplicates: Dict[str, List[str]] = {}
+        for k, roles in pat_roles.items():
+            if len(roles) > 1:
+                duplicates[k] = sorted(list(roles))
+        return duplicates
+
     def _update_save_button_state(self) -> None:
         """Enable/disable Save button, and adjust its label."""
         name = self._current_profile_name()
@@ -507,7 +534,12 @@ class ChannelSetupDialog(QtWidgets.QDialog):
             try:
                 self.btn_ok.setText("Save changes")
                 self.btn_ok.setToolTip("Save modifications to the current profile.")
-                self.btn_ok.setEnabled(bool(changed))
+                # Require an Energy channel before allowing saves.
+                if changed and ("Energy" not in current):
+                    self.btn_ok.setEnabled(False)
+                    self.btn_ok.setToolTip("Set an Energy channel before saving this profile.")
+                else:
+                    self.btn_ok.setEnabled(bool(changed))
             except Exception:
                 pass
             return
@@ -516,9 +548,14 @@ class ChannelSetupDialog(QtWidgets.QDialog):
         try:
             self.btn_ok.setText("Create profile")
             self.btn_ok.setToolTip("Create a new profile with this name.")
-            # Allow creating only if at least one role is filled.
             current = self._normalized_mapping(self._read_table())
-            self.btn_ok.setEnabled(bool(current))
+            # Require an Energy channel before allowing creation.
+            if "Energy" not in current:
+                self.btn_ok.setEnabled(False)
+                self.btn_ok.setToolTip("Set an Energy channel before creating a new profile.")
+            else:
+                # Allow creating only if at least one role is filled (Energy alone is allowed).
+                self.btn_ok.setEnabled(bool(current))
         except Exception:
             pass
     def _populate_table_for_profile(self, name: str) -> None:
@@ -577,6 +614,29 @@ class ChannelSetupDialog(QtWidgets.QDialog):
             return
 
         current_norm = self._normalized_mapping(self._read_table())
+
+        # Validate: Energy channel is required for a usable profile.
+        if "Energy" not in current_norm:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Missing Energy channel",
+                "Please set an Energy channel before saving a beamline profile.",
+            )
+            return
+
+        # Validate: prevent the same dataset/pattern being assigned to multiple roles.
+        duplicates = self._find_duplicate_patterns(current_norm)
+        if duplicates:
+            lines = []
+            for pat, roles in sorted(duplicates.items(), key=lambda kv: kv[0]):
+                lines.append(f"  • '{pat}' → {', '.join(roles)}")
+            msg = (
+                "The same dataset name/substring is assigned to more than one role.\n\n"
+                "Please make each role unique.\n\n"
+                "Conflicts:\n" + "\n".join(lines)
+            )
+            QtWidgets.QMessageBox.warning(self, "Duplicate channel assignments", msg)
+            return
 
         # If profile exists and we are updating it, confirm overwrite when there are actual changes.
         if name in profiles and loaded == name:

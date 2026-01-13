@@ -67,7 +67,9 @@ class CurveListItemWidget(QWidget):
         # Size spinbox (line width or marker size)
         self.size_spin = QSpinBox()
         self.size_spin.setRange(1, 10)
-        self.size_spin.setValue(1)
+        # Matplotlib's default line width is often 1.5, but our UI exposes only integers.
+        # Use an integer default so users can always return to the initial look easily.
+        self.size_spin.setValue(2)
         self.size_spin.setToolTip("Line width / marker size")
         self.size_spin.valueChanged.connect(self.on_style_changed)
         layout.addWidget(self.size_spin)
