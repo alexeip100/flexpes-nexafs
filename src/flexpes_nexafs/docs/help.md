@@ -260,20 +260,40 @@ Legend behavior is controlled via the **Legend:** drop-down on the Plotted Data 
 
 - **User-defined (default):** shows the legend and lets you set custom curve names.
   - In the legend, entries initially appear as `<select curve name>`.
-  - Right-click a legend label to rename that curve. The new name is stored and reused when the legend is rebuilt.
+  - **Left-click** a legend label to rename that curve (only in User-defined mode).
 - **Entry number:** shows the legend and automatically labels curves by their entry ID.
   - For example, `entry6567` becomes `6567` in the legend.
 - **None:** removes the legend from the plot.
 
-You can always reposition the legend (when shown) by dragging the legend box inside the axes.
+**Drag:** You can reposition the legend by dragging it inside the axes.
+
+**Right-click to edit style:** Right-click the legend (text or frame) to edit its appearance:
+- transparency
+- margins/padding
+- font size
+- font style (bold/italic/underline)
+
+> Tip: when the mouse is inside the legend box, a small tooltip reminds you: “Right click to edit”.
+
 
 ### Annotation
 
-- **Annotation checkbox:** show/hide a single annotation text on the
-  Plotted Data plot.
+- **Annotation checkbox:** show/hide a single annotation text on the Plotted Data plot.
 - When visible:
-  - Click the annotation text to edit it (via a dialog).
-  - Drag the annotation with the left mouse button to reposition it.
+  - **Drag with left mouse button** to reposition it.
+  - **Right-click** to edit the annotation text and style.
+
+The annotation editor supports:
+- font size
+- font style (bold/italic/underline)
+- font color
+- background color or no background
+- border on/off (and border thickness/color)
+- padding (margin between text and frame)
+- inserting common symbols (e.g. °, ±, µ, Å, α, β, Δ, ≤, ≥)
+
+> Tip: when the mouse is inside the annotation box, a tooltip reminds you: “Right click to edit”.
+
 
 ### Grid
 

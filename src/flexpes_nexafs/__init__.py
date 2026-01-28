@@ -4,5 +4,5 @@ Keep version/date here as the single source of truth.
 UI code should read from these constants to avoid drift.
 """
 
-__version__ = "2.3.5"
-__date__ = "2026-01-12"
+__version__ = "2.3.6"
+__date__ = "2026-01-28"

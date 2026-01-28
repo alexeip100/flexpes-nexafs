@@ -879,6 +879,26 @@ class PCATab(BaseAnalysisTab):
             )
             return
 
+        # Handle missing values (NaNs) consistently (overlap trimming + optional interpolation)
+        try:
+            from flexpes_nexafs.utils.nan_policy import prepare_matrix_with_nan_policy
+        except Exception:
+            prepare_matrix_with_nan_policy = None
+
+        if prepare_matrix_with_nan_policy is not None:
+            labels = [self.model.sample_labels[i] for i in idx_sel]
+            cleaned = prepare_matrix_with_nan_policy(
+                self,
+                e,
+                X,
+                labels,
+                action_label="PCA",
+            )
+            if cleaned is None:
+                return
+            e, X = cleaned
+
+
         n, m = X.shape
 
         # Center data
@@ -1152,6 +1172,26 @@ class NMFTab(BaseAnalysisTab):
             )
             return
 
+        # Handle missing values (NaNs) consistently (overlap trimming + optional interpolation)
+        try:
+            from flexpes_nexafs.utils.nan_policy import prepare_matrix_with_nan_policy
+        except Exception:
+            prepare_matrix_with_nan_policy = None
+
+        if prepare_matrix_with_nan_policy is not None:
+            labels = [self.model.sample_labels[i] for i in idx_sel]
+            cleaned = prepare_matrix_with_nan_policy(
+                self,
+                e,
+                X,
+                labels,
+                action_label="NMF",
+            )
+            if cleaned is None:
+                return
+            e, X = cleaned
+
+
         n, m = X.shape
 
         # k default from PCA
@@ -1420,6 +1460,26 @@ class MCRTab(BaseAnalysisTab):
                 str(err),
             )
             return
+
+        # Handle missing values (NaNs) consistently (overlap trimming + optional interpolation)
+        try:
+            from flexpes_nexafs.utils.nan_policy import prepare_matrix_with_nan_policy
+        except Exception:
+            prepare_matrix_with_nan_policy = None
+
+        if prepare_matrix_with_nan_policy is not None:
+            labels = [self.model.sample_labels[i] for i in idx_sel]
+            cleaned = prepare_matrix_with_nan_policy(
+                self,
+                e,
+                X,
+                labels,
+                action_label="MCR",
+            )
+            if cleaned is None:
+                return
+            e, X = cleaned
+
 
         n, m = X.shape
 

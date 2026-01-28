@@ -17,16 +17,26 @@ try:
 except Exception:
     CurveTreeWidgetItem = None
     
+try:
+    from .widgets.annotation_dialog import AnnotationEditDialog
+except Exception:
+    AnnotationEditDialog = None
+
+try:
+    from .widgets.legend_style_dialog import LegendStyleDialog
+except Exception:
+    LegendStyleDialog = None
+
 from datetime import datetime    
 
 from PyQt5.QtWidgets import (
     QTextEdit,
     QApplication, QFileDialog, QTreeWidget, QTreeWidgetItem, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTabWidget, QCheckBox, QComboBox,
-    QSpinBox, QMessageBox, QSizePolicy, QDialog, QListWidgetItem, QInputDialog, QTextBrowser, QMenu, QSplitter
+    QSpinBox, QMessageBox, QSizePolicy, QDialog, QListWidgetItem, QInputDialog, QTextBrowser, QMenu, QSplitter, QToolTip
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor, QTextOption
+from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor, QTextOption, QCursor
 
 class HelpBrowser(QTextBrowser):
     """QTextBrowser subclass that keeps text wrapping responsive on resize.
@@ -1238,6 +1248,203 @@ class PlottingMixin:
             pass
 
 
+
+    def _default_plotted_annotation_style(self):
+        """Default style for the Plotted Data annotation."""
+        return {
+            "fontsize": 12,
+            "bold": False,
+            "italic": False,
+            "underline": False,
+            "font_color": "#000000",
+            "bg_enabled": True,
+            "bg_color": "#FFFFFF",
+            "border_enabled": True,
+            "border_color": "#000000",
+            "border_width": 0.8,
+            "pad": 0.30,
+        }
+
+    def _get_plotted_annotation_style(self):
+        """Get persisted style for the Plotted Data annotation."""
+        try:
+            st = getattr(self, "plotted_annotation_style", None)
+        except Exception:
+            st = None
+        if not isinstance(st, dict):
+            st = {}
+        base = self._default_plotted_annotation_style()
+        base.update({k: v for k, v in st.items() if k in base})
+        return base
+
+
+    def _default_plotted_legend_style(self):
+        """Default style for the Plotted Data legend."""
+        return {
+            "alpha": 1.0,
+            "borderpad": 0.4,
+            "fontsize": 10,
+            "bold": False,
+            "italic": False,
+            "underline": False,
+        }
+
+
+    def _get_plotted_legend_style(self):
+        """Get persisted style for the Plotted Data legend."""
+        try:
+            st = getattr(self, "plotted_legend_style", None)
+        except Exception:
+            st = None
+        if not isinstance(st, dict):
+            st = {}
+        base = self._default_plotted_legend_style()
+        base.update({k: v for k, v in st.items() if k in base})
+        return base
+
+
+    def _legend_fontprops_from_style(self, style: dict):
+        """Return a matplotlib FontProperties from legend style."""
+        try:
+            from matplotlib.font_manager import FontProperties
+        except Exception:
+            return None
+
+        try:
+            size = int(style.get("fontsize", 10))
+        except Exception:
+            size = 10
+        weight = "bold" if bool(style.get("bold", False)) else "normal"
+        fstyle = "italic" if bool(style.get("italic", False)) else "normal"
+        try:
+            return FontProperties(size=size, weight=weight, style=fstyle)
+        except Exception:
+            return None
+
+
+    def _apply_plotted_legend_style(self, leg, style: dict):
+        """Apply stored legend style to a matplotlib Legend instance."""
+        if leg is None:
+            return
+        # Frame transparency
+        try:
+            alpha = float(style.get("alpha", 1.0))
+        except Exception:
+            alpha = 1.0
+        try:
+            frame = leg.get_frame()
+            if frame is not None:
+                frame.set_alpha(alpha)
+        except Exception:
+            pass
+
+        # Margins (borderpad)
+        try:
+            pad = float(style.get("borderpad", 0.4))
+        except Exception:
+            pad = 0.4
+        try:
+            # Prefer public API when available
+            if hasattr(leg, "set_borderpad"):
+                leg.set_borderpad(pad)
+            else:
+                # Fallback: set attribute (works on many matplotlib versions)
+                leg.borderpad = pad
+        except Exception:
+            pass
+
+        # Font
+        fp = self._legend_fontprops_from_style(style)
+        underline = bool(style.get("underline", False))
+        try:
+            for t in leg.get_texts() or []:
+                if fp is not None:
+                    try:
+                        t.set_fontproperties(fp)
+                    except Exception:
+                        # Fallback per-field
+                        try:
+                            t.set_fontsize(int(style.get("fontsize", 10)))
+                        except Exception:
+                            pass
+                        try:
+                            t.set_fontweight("bold" if bool(style.get("bold", False)) else "normal")
+                        except Exception:
+                            pass
+                        try:
+                            t.set_fontstyle("italic" if bool(style.get("italic", False)) else "normal")
+                        except Exception:
+                            pass
+                try:
+                    t.set_underline(bool(underline))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _build_plotted_annotation_bbox(self, style: dict):
+        """Build a matplotlib bbox dict (or None) from a style dict."""
+        try:
+            enabled = bool(style.get("bg_enabled", True))
+        except Exception:
+            enabled = True
+        if not enabled:
+            return None
+        try:
+            pad = float(style.get("pad", 0.30))
+        except Exception:
+            pad = 0.30
+        try:
+            fc = style.get("bg_color", "#FFFFFF") or "#FFFFFF"
+        except Exception:
+            fc = "#FFFFFF"
+        # Border options
+        try:
+            border_enabled = bool(style.get("border_enabled", True))
+        except Exception:
+            border_enabled = True
+        try:
+            bc = style.get("border_color", "#000000") or "#000000"
+        except Exception:
+            bc = "#000000"
+        try:
+            bw = float(style.get("border_width", 0.8))
+        except Exception:
+            bw = 0.8
+        ec = bc if border_enabled else "none"
+        lw = bw if border_enabled else 0.0
+        return dict(boxstyle=f"round,pad={pad}", fc=fc, ec=ec, lw=lw)
+
+    def _apply_plotted_annotation_style(self, ann, style: dict):
+        """Apply style dict to a matplotlib Text annotation."""
+        if ann is None:
+            return
+        try:
+            ann.set_fontsize(int(style.get("fontsize", 12)))
+        except Exception:
+            pass
+        try:
+            ann.set_fontweight("bold" if bool(style.get("bold", False)) else "normal")
+        except Exception:
+            pass
+        try:
+            ann.set_fontstyle("italic" if bool(style.get("italic", False)) else "normal")
+        except Exception:
+            pass
+        try:
+            ann.set_underline(bool(style.get("underline", False)))
+        except Exception:
+            pass
+        try:
+            ann.set_color(style.get("font_color", "#000000"))
+        except Exception:
+            pass
+        try:
+            ann.set_bbox(self._build_plotted_annotation_bbox(style))
+        except Exception:
+            pass
+
+
     def toggle_plotted_annotation(self, visible: bool):
         """Show or hide the the annotation text box on the Plotted Data axes."""
         ax = getattr(self, "plotted_ax", None)
@@ -1251,6 +1458,8 @@ class PlottingMixin:
             if ann is None:
                 text = getattr(self, "plotted_annotation_text", "") or "Right-click to edit"
                 try:
+                    style = self._get_plotted_annotation_style()
+                    bbox = self._build_plotted_annotation_bbox(style)
                     ann = ax.text(
                         0.02,
                         0.98,
@@ -1258,7 +1467,7 @@ class PlottingMixin:
                         transform=ax.transAxes,
                         va="top",
                         ha="left",
-                        bbox=dict(boxstyle="round", fc="w", alpha=0.4),
+                        bbox=bbox,
                     )
                     ann.set_picker(True)
                     try:
@@ -1278,6 +1487,14 @@ class PlottingMixin:
                     except Exception:
                         pass
                     self.plotted_annotation = ann
+                    try:
+                        self.plotted_annotation_style = style
+                    except Exception:
+                        self.plotted_annotation_style = style
+                    try:
+                        self._apply_plotted_annotation_style(ann, style)
+                    except Exception:
+                        pass
                 except Exception:
                     ann = None
                     self.plotted_annotation = None
@@ -1325,6 +1542,69 @@ class PlottingMixin:
     def _on_annotation_motion(self, event):
         """Update annotation position while dragging."""
         if not getattr(self, "_annot_drag_active", False):
+            # Hover tooltip: show "Right click to edit" when cursor is inside the annotation box
+            try:
+                ax = getattr(self, "plotted_ax", None)
+                ann = getattr(self, "plotted_annotation", None)
+
+                inside_ann = False
+                inside_leg = False
+                if ax is not None and event is not None and event.inaxes is ax:
+                    if ann is not None:
+                        try:
+                            inside_ann = bool(ann.contains(event)[0])
+                        except Exception:
+                            inside_ann = False
+
+                    # Legend hover (same hint)
+                    try:
+                        leg = ax.get_legend()
+                    except Exception:
+                        leg = None
+                    if leg is not None:
+                        try:
+                            inside_leg = bool(leg.contains(event)[0])
+                        except Exception:
+                            inside_leg = False
+
+                # Prefer annotation hover when both are true
+                if inside_ann:
+                    inside_leg = False
+
+                annot_tip_active = getattr(self, "_annot_tooltip_active", False)
+                legend_tip_active = getattr(self, "_legend_tooltip_active", False)
+
+                # Determine whether to show the tooltip
+                show = inside_ann or inside_leg
+
+                if show and not (annot_tip_active or legend_tip_active):
+                    pos = None
+                    ge = getattr(event, "guiEvent", None)
+                    if ge is not None:
+                        try:
+                            pos = ge.globalPos()
+                        except Exception:
+                            pos = None
+                    if pos is None:
+                        pos = QCursor.pos()
+                    owner = getattr(self, "plotted_canvas", None) or self
+                    QToolTip.showText(pos, "Right click to edit", owner)
+                    self._annot_tooltip_active = bool(inside_ann)
+                    self._legend_tooltip_active = bool(inside_leg)
+
+                elif (not show) and (annot_tip_active or legend_tip_active):
+                    QToolTip.hideText()
+                    self._annot_tooltip_active = False
+                    self._legend_tooltip_active = False
+
+                else:
+                    # If we are switching target (annotation <-> legend), just flip the flags
+                    if show:
+                        self._annot_tooltip_active = bool(inside_ann)
+                        self._legend_tooltip_active = bool(inside_leg)
+
+            except Exception:
+                pass
             return
         ax = getattr(self, "plotted_ax", None)
         ann = getattr(self, "plotted_annotation", None)
@@ -1442,6 +1722,48 @@ class PlottingMixin:
                 old_text = ann.get_text() or ""
             except Exception:
                 old_text = ""
+                        # Use enhanced dialog if available
+            if AnnotationEditDialog is not None:
+                try:
+                    style = self._get_plotted_annotation_style()
+                except Exception:
+                    style = self._default_plotted_annotation_style()
+                try:
+                    dlg = AnnotationEditDialog(old_text, style, self)
+                    ok = (dlg.exec_() == QDialog.Accepted)
+                except Exception:
+                    dlg = None
+                    ok = False
+
+                if ok and dlg is not None:
+                    try:
+                        text, new_style = dlg.get_text_and_style()
+                    except Exception:
+                        text, new_style = old_text, style
+                    try:
+                        ann.set_text(str(text))
+                    except Exception:
+                        pass
+                    try:
+                        self.plotted_annotation_text = str(text)
+                    except Exception:
+                        self.plotted_annotation_text = str(text)
+                    try:
+                        self.plotted_annotation_style = dict(new_style)
+                    except Exception:
+                        self.plotted_annotation_style = dict(new_style)
+                    try:
+                        self._apply_plotted_annotation_style(ann, dict(new_style))
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, "canvas_plotted"):
+                            self.canvas_plotted.draw()
+                    except Exception:
+                        pass
+                return
+
+            # Fallback: simple text-only dialog
             new_text, ok = QInputDialog.getText(
                 self,
                 "Edit annotation",
@@ -1468,7 +1790,65 @@ class PlottingMixin:
                     pass
             return
 
-        # 2) Legend text renaming (only in 'User-defined' mode)
+        # 2) Legend interactions
+        ax = getattr(self, "plotted_ax", None)
+        if ax is None:
+            return
+        try:
+            leg = ax.get_legend()
+        except Exception:
+            leg = None
+        if leg is None:
+            return
+
+        # Right click on legend -> edit legend style (available in any legend mode)
+        try:
+            mouse = getattr(event, 'mouseevent', None)
+            button = getattr(mouse, 'button', None)
+        except Exception:
+            button = None
+
+        # Accept right-click either on a legend text or on the legend frame
+        try:
+            frame = leg.get_frame()
+        except Exception:
+            frame = None
+
+        try:
+            legend_texts = list(leg.get_texts() or [])
+        except Exception:
+            legend_texts = []
+
+        if button in (3,) and (artist in legend_texts or (frame is not None and artist is frame)):
+            if LegendStyleDialog is None:
+                return
+            try:
+                style = self._get_plotted_legend_style()
+            except Exception:
+                style = self._default_plotted_legend_style()
+            try:
+                dlg = LegendStyleDialog(style, self)
+                ok = (dlg.exec_() == QDialog.Accepted)
+            except Exception:
+                ok = False
+                dlg = None
+            if ok and dlg is not None:
+                try:
+                    new_style = dlg.get_style()
+                except Exception:
+                    new_style = style
+                try:
+                    self.plotted_legend_style = dict(new_style)
+                except Exception:
+                    self.plotted_legend_style = dict(new_style)
+                # Rebuild legend to apply padding/font changes while preserving dragged placement
+                try:
+                    self.update_legend()
+                except Exception:
+                    pass
+            return
+
+        # 3) Legend text renaming (only in 'User-defined' mode)
         try:
             mode = str(self._get_plotted_legend_mode() or "User-defined").strip().lower()
         except Exception:
@@ -1476,16 +1856,13 @@ class PlottingMixin:
         if mode not in ("user-defined", "user", "custom"):
             return
 
-        ax = getattr(self, "plotted_ax", None)
-        if ax is None:
-            return
-        leg = ax.get_legend()
-        if leg is None:
-            return
-
-        texts = list(leg.get_texts() or [])
+        texts = legend_texts
         if artist not in texts:
             # Ignore picks that are not legend text
+            return
+
+        # Only open rename dialog on left click
+        if button not in (1, None):
             return
 
         if hasattr(artist, "get_text"):
@@ -1812,6 +2189,28 @@ class PlottingMixin:
             ax = self.plotted_ax
             leg = None
             if handles:
+                # Legend style (persisted)
+                try:
+                    leg_style = self._get_plotted_legend_style()
+                except Exception:
+                    leg_style = self._default_plotted_legend_style()
+
+                legend_kwargs = {}
+                try:
+                    legend_kwargs["borderpad"] = float(leg_style.get("borderpad", 0.4))
+                except Exception:
+                    pass
+                try:
+                    legend_kwargs["framealpha"] = float(leg_style.get("alpha", 1.0))
+                except Exception:
+                    pass
+                try:
+                    fp = self._legend_fontprops_from_style(leg_style)
+                    if fp is not None:
+                        legend_kwargs["prop"] = fp
+                except Exception:
+                    pass
+
                 # Recreate legend at its previous location if known
                 saved_loc = getattr(self, "_plotted_legend_loc", None)
 
@@ -1824,15 +2223,15 @@ class PlottingMixin:
                             # Use a plain tuple in Axes coordinates when possible
                             b = getattr(saved_bbox, "bounds", None)
                             if b is not None:
-                                leg = ax.legend(handles, labels, loc=saved_loc, bbox_to_anchor=b, bbox_transform=ax.transAxes)
+                                leg = ax.legend(handles, labels, loc=saved_loc, bbox_to_anchor=b, bbox_transform=ax.transAxes, **legend_kwargs)
                             else:
-                                leg = ax.legend(handles, labels, loc=saved_loc, bbox_to_anchor=saved_bbox, bbox_transform=ax.transAxes)
+                                leg = ax.legend(handles, labels, loc=saved_loc, bbox_to_anchor=saved_bbox, bbox_transform=ax.transAxes, **legend_kwargs)
                         except Exception:
-                            leg = ax.legend(handles, labels, loc=saved_loc)
+                            leg = ax.legend(handles, labels, loc=saved_loc, **legend_kwargs)
                     else:
-                        leg = ax.legend(handles, labels, loc=saved_loc)
+                        leg = ax.legend(handles, labels, loc=saved_loc, **legend_kwargs)
                 else:
-                    leg = ax.legend(handles, labels)
+                    leg = ax.legend(handles, labels, **legend_kwargs)
                 try:
                     if leg:
                         # Prevent tight_layout from shrinking the axes to "make room" for the legend
@@ -1842,12 +2241,25 @@ class PlottingMixin:
                         except Exception:
                             pass
                         leg.set_draggable(True)
+                        # Make the legend frame pickable (for right-click style editing)
+                        try:
+                            frame = leg.get_frame()
+                            if frame is not None:
+                                frame.set_picker(5)
+                        except Exception:
+                            pass
                         for t in leg.get_texts():
                             # Smaller picker tolerance reduces accidental selection of a neighbour entry.
                             try:
                                 t.set_picker(5)
                             except Exception:
                                 t.set_picker(True)
+                except Exception:
+                    pass
+
+                # Apply underline (and any post-creation tweaks)
+                try:
+                    self._apply_plotted_legend_style(leg, leg_style)
                 except Exception:
                     pass
 
@@ -2525,36 +2937,24 @@ class PlottingMixin:
         self.chk_show_without_bg.setChecked(False)
         self.reset_manual_mode()
         self.scalar_display_raw.setText("")
-        self.plotted_ax.clear()
-        self.plotted_ax.set_xlabel("Photon energy (eV)")
-        self.plotted_ax.set_ylabel("XAS intensity (arb. units)")
-        self.canvas_plotted_fig.tight_layout()
-        self.canvas_plotted.draw()
-        # Reset annotation state when clearing everything
+        # Clear plotted data (keep grid settings like the "Clear Plotted" button)
         try:
-            ann = getattr(self, "plotted_annotation", None)
-            if ann is not None:
-                try:
-                    ann.remove()
-                except Exception:
-                    pass
-            self.plotted_annotation = None
+            self.clear_plotted_data()
+        except Exception:
+            # Fallback: minimal clear if helper is unavailable
+            self.plotted_ax.clear()
+            self.plotted_ax.set_xlabel("Photon energy (eV)")
+            self.plotted_ax.set_ylabel("XAS intensity (arb. units)")
+            self.canvas_plotted_fig.tight_layout()
+            self.canvas_plotted.draw()
+            self.plotted_curves.clear()
+            self.plotted_lines.clear()
+            self.plotted_list.clear()
             try:
-                self.plotted_annotation_text = "Right-click to edit"
+                self.custom_labels.clear()
             except Exception:
-                self.plotted_annotation_text = "Right-click to edit"
-        except Exception:
-            pass
-        try:
-            if hasattr(self, "chk_show_annotation") and self.chk_show_annotation is not None:
-                self.chk_show_annotation.setChecked(False)
-        except Exception:
-            pass
-
-        self.plotted_curves.clear()
-        self.plotted_lines.clear()
-        self.plotted_list.clear()
-        self.original_line_data.clear()
+                pass
+            self.original_line_data.clear()
         self.update_pass_button_state()
 
     # ------------ Left tree interactions ------------
@@ -2569,6 +2969,23 @@ class PlottingMixin:
             return
         abs_path, hdf5_path = data
         hdf5_path = self._normalize_hdf5_key(hdf5_path)
+        # Prefer datasets from the "measurement" group only; ignore "plot_1" and other derived groups.
+        norm = "/" + str(hdf5_path).strip("/") + "/"
+        if "/measurement/" not in norm:
+            try:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self,
+                    "Ignoring non-measurement data",
+                    f'The dataset “{hdf5_path}” is not under a "/measurement/" group and will be ignored.'
+                )
+            except Exception:
+                pass
+            try:
+                item.setCheckState(0, Qt.Unchecked)
+            except Exception:
+                pass
+            return
         if abs_path not in self.hdf5_files:
             return
 
@@ -3196,7 +3613,14 @@ class PlottingMixin:
                     pass
                 line, = self.proc_ax.plot(x_use, yy, label=self.shorten_label(hdf5_path), color=self._get_persistent_curve_color(key))
             else:
-                line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path), color=self._get_persistent_curve_color(combined_label))
+                # Show the original (unsubtracted) spectrum together with its fitted background.
+                # Use the same persistent color key as the spectrum itself.
+                line, = self.proc_ax.plot(
+                    x_use,
+                    y_use,
+                    label=self.shorten_label(hdf5_path),
+                    color=self._get_persistent_curve_color(key),
+                )
                 self.proc_ax.plot(x_use, bg, linestyle="--", linewidth=1.2, alpha=0.65, color=line.get_color(), label="_bg")
             try:
                 line.dataset_key = key
@@ -3940,33 +4364,129 @@ class PlottingMixin:
 
     # ------------ Right-panel trees (raw/proc) ------------
     def group_datasets(self):
-        groups = []
-        for key in getattr(self, "plot_data", {}).keys():
-            parts = key.split("##", 1)
-            if len(parts) != 2:
+        """Group currently loaded 1D datasets into "regions" by scan start/end energies.
+
+        Regions are determined ONLY by the start/end of the energy axis (x).
+        Small numerical differences (< 0.01 eV) in start/end must not split regions.
+
+        Notes:
+        - NaNs in the signal (y) must not influence region limits.
+        - This implementation is order-independent (uses union-find clustering),
+          avoiding the "greedy clustering" pitfall where earlier region references
+          can drift and prevent later merges.
+        """
+        import numpy as np
+
+        tol_E = 0.01  # eV (10 meV)
+
+        # Collect (key, E_start, E_end)
+        items = []
+        for key, y_data in getattr(self, "plot_data", {}).items():
+            try:
+                parts = key.split("##", 1)
+                if len(parts) != 2:
+                    continue
+                abs_path, hdf5_path = parts
+                parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+
+                if y_data is None:
+                    continue
+                y_arr = np.asarray(y_data).ravel()
+                if y_arr.size == 0:
+                    continue
+
+                # Energy lookup (pcap_energy_av preferred inside lookup_energy).
+                try:
+                    from .data import lookup_energy as _lookup
+                    x_data = _lookup(self, abs_path, parent, int(y_arr.size))
+                except Exception:
+                    x_data = np.arange(y_arr.size)
+
+                if getattr(x_data, "size", 0) == 0:
+                    continue
+                x_arr = np.asarray(x_data).ravel()
+
+                # Match plotting length.
+                n = int(min(x_arr.size, y_arr.size))
+                if n <= 0:
+                    continue
+                x_use = x_arr[:n]
+
+                # Use first/last finite x as scan limits.
+                finite = np.isfinite(x_use)
+                if not np.any(finite):
+                    continue
+                i0 = int(np.argmax(finite))
+                i1 = int(len(finite) - 1 - np.argmax(finite[::-1]))
+
+                e_start = float(x_use[i0])
+                e_end = float(x_use[i1])
+                if not (np.isfinite(e_start) and np.isfinite(e_end)):
+                    continue
+                if e_end < e_start:
+                    e_start, e_end = e_end, e_start
+
+                items.append((key, e_start, e_end))
+            except Exception:
                 continue
-            abs_path, hdf5_path = parts
-            parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
-            y_data = self.plot_data[key]
-            x_data = getattr(self, "_lookup_energy", lambda *a, **k: np.arange(len(y_data)))(abs_path, parent, len(y_data))
-            if getattr(x_data, "size", 0) == 0:
-                continue
-            min_x = float(np.min(x_data))
-            max_x = float(np.max(x_data))
-            groups.append((key, min_x, max_x))
-        groups.sort(key=lambda t: t[1])
-        merged = []
-        for key, min_x, max_x in groups:
-            if not merged:
-                merged.append({'keys': [key], 'min': min_x, 'max': max_x})
+
+        if not items:
+            return []
+
+        # ---- Union-Find clustering (order-independent) ----
+        n = len(items)
+        parent = list(range(n))
+        rank = [0] * n
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            if rank[ra] < rank[rb]:
+                parent[ra] = rb
+            elif rank[ra] > rank[rb]:
+                parent[rb] = ra
             else:
-                last = merged[-1]
-                if min_x <= last['max']:
-                    last['keys'].append(key)
-                    last['max'] = max(last['max'], max_x)
-                else:
-                    merged.append({'keys': [key], 'min': min_x, 'max': max_x})
-        return merged
+                parent[rb] = ra
+                rank[ra] += 1
+
+        # Bucket by start energy to reduce comparisons.
+        # Any pair within tol_E must fall into same or adjacent start-bin.
+        start_bins = {}  # bin_id -> list of indices already seen
+        for i, (_, es, ee) in enumerate(items):
+            b = int(np.floor(es / tol_E))
+            # Compare with indices in neighbouring start-bins.
+            for bb in (b - 1, b, b + 1):
+                for j in start_bins.get(bb, []):
+                    _, es2, ee2 = items[j]
+                    if abs(es - es2) <= tol_E and abs(ee - ee2) <= tol_E:
+                        union(i, j)
+            start_bins.setdefault(b, []).append(i)
+
+        # Build clusters
+        clusters = {}
+        for i, (key, es, ee) in enumerate(items):
+            r = find(i)
+            clusters.setdefault(r, {"keys": [], "starts": [], "ends": []})
+            clusters[r]["keys"].append(key)
+            clusters[r]["starts"].append(es)
+            clusters[r]["ends"].append(ee)
+
+        out = []
+        for c in clusters.values():
+            # Robust representative for display
+            ref_start = float(np.median(c["starts"]))
+            ref_end = float(np.median(c["ends"]))
+            out.append({"keys": c["keys"], "min": ref_start, "max": ref_end})
+
+        out.sort(key=lambda g: (g.get("min", 0.0), g.get("max", 0.0)))
+        return out
 
     def update_raw_tree(self):
         # Refresh 'All in channel' combobox if present
@@ -3983,7 +4503,7 @@ class PlottingMixin:
             for idx, group in enumerate(groups):
                 region_id = f"region_{idx}"
                 region_state = getattr(self, "region_states", {}).get(region_id, Qt.Checked)
-                region_item = QTreeWidgetItem([f"Region {idx+1}"])
+                region_item = QTreeWidgetItem([f"Region {idx+1}  ({group.get('min',0):.3f}–{group.get('max',0):.3f})"])
                 region_item.setFlags(region_item.flags() | Qt.ItemIsUserCheckable)
                 region_item.setCheckState(0, region_state)
                 region_item.setData(0, Qt.UserRole+1, region_id)
@@ -4060,7 +4580,7 @@ class PlottingMixin:
             groups = self.group_datasets()
             for idx, group in enumerate(groups):
                 region_id = f"proc_region_{idx}"
-                region_item = QTreeWidgetItem([f"Region {idx+1}"])
+                region_item = QTreeWidgetItem([f"Region {idx+1}  ({group.get('min',0):.3f}–{group.get('max',0):.3f})"])
                 region_item.setFlags(region_item.flags() | Qt.ItemIsUserCheckable)
                 region_item.setCheckState(0, self.proc_region_states.get(region_id, Qt.Checked))
                 region_item.setData(0, Qt.UserRole+1, region_id)
@@ -4130,7 +4650,7 @@ class PlottingMixin:
     # ------------ Compatibility ------------
     def setGeometry(self, *args, **kwargs):
         """Delegate to the underlying Qt widget implementation.
-    
+
         A previous no-op stub here prevented QMainWindow.setGeometry() from
         taking effect due to MRO (PlottingMixin appears before QMainWindow).
         """

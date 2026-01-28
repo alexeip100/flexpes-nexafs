@@ -173,6 +173,31 @@ class ExportMixin:
         y_out = [np.asarray(y)[:min_len] for y in y_columns]
         header_row = ["X"] + clean
 
+        # Handle missing values (NaNs) consistently (overlap trimming + optional interpolation)
+        try:
+            from flexpes_nexafs.utils.nan_policy import prepare_matrix_with_nan_policy
+        except Exception:
+            prepare_matrix_with_nan_policy = None
+
+        if prepare_matrix_with_nan_policy is not None:
+            try:
+                Ymat = np.vstack([np.asarray(col, dtype=float) for col in y_out])
+            except Exception:
+                Ymat = None
+
+            if Ymat is not None and Ymat.ndim == 2 and Ymat.shape[0] == len(clean) and Ymat.shape[1] == len(x_out):
+                cleaned = prepare_matrix_with_nan_policy(
+                    self,
+                    np.asarray(x_out),
+                    Ymat,
+                    clean,
+                    action_label="CSV export",
+                )
+                if cleaned is None:
+                    return
+                x_out, Ymat = cleaned
+                y_out = [Ymat[i, :] for i in range(Ymat.shape[0])]
+
         # Default dir: any opened HDF5 dir
         any_file = None
         try:

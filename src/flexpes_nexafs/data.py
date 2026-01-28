@@ -199,39 +199,130 @@ class DataMixin:
             raise last_error or e
 
     def group_datasets(self):
-        groups = []
-        for key in self.plot_data.keys():
-            parts = key.split("##", 1)
-            if len(parts) != 2:
+        """Group currently loaded 1D datasets into energy 'regions'.
+
+        A region is defined ONLY by the energy start and energy end of the scan
+        (derived from the x-axis). Small numerical deviations (< 0.01 eV) in
+        start/end must NOT split regions.
+
+        This function is intentionally robust to NaNs in the energy axis
+        (pcap_energy_av). If x contains NaNs, we use finite values only.
+        If no finite x can be found, we fall back to a simple index axis.
+
+        Returns
+        -------
+        list of dict
+            Each dict has keys: "keys" (list of dataset keys), "min" (region start),
+            "max" (region end).
+        """
+        tol_E = 0.01  # eV
+
+        # Collect (key, E_start, E_end) for every currently loaded curve
+        items = []
+        for key, y_data in getattr(self, "plot_data", {}).items():
+            try:
+                parts = str(key).split("##", 1)
+                if len(parts) != 2:
+                    continue
+                abs_path, hdf5_path = parts
+                parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+
+                if y_data is None:
+                    continue
+                y_arr = np.asarray(y_data).ravel()
+                if y_arr.size == 0:
+                    continue
+
+                # Energy axis lookup (prefers pcap_energy_av via lookup_energy)
+                try:
+                    x_data = lookup_energy(self, abs_path, parent, int(y_arr.size))
+                except Exception:
+                    x_data = np.arange(int(y_arr.size), dtype=float)
+
+                if getattr(x_data, "size", 0) == 0:
+                    continue
+                x_arr = np.asarray(x_data).ravel()
+
+                # Match plotted length
+                n = int(min(x_arr.size, y_arr.size))
+                if n <= 0:
+                    continue
+                x_use = x_arr[:n]
+
+                # Determine scan start/end using finite x only
+                finite = np.isfinite(x_use)
+                if not np.any(finite):
+                    # No usable energy axis; fall back to index axis for grouping
+                    x_use = np.arange(n, dtype=float)
+                    finite = np.isfinite(x_use)
+
+                # Use first and last finite x values as endpoints
+                i0 = int(np.argmax(finite))
+                i1 = int(len(finite) - 1 - np.argmax(finite[::-1]))
+                e_start = float(x_use[i0])
+                e_end = float(x_use[i1])
+                if not (np.isfinite(e_start) and np.isfinite(e_end)):
+                    continue
+                if e_end < e_start:
+                    e_start, e_end = e_end, e_start
+
+                items.append((key, e_start, e_end))
+            except Exception:
                 continue
-    
-            abs_path, hdf5_path = parts
-            parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
-            y_data = self.plot_data[key]
-            x_data = lookup_energy(self, abs_path, parent, len(y_data))
-    
-            if getattr(x_data, "size", 0) == 0:
-                continue
-    
-            min_x = np.min(x_data)
-            max_x = np.max(x_data)
-            groups.append((key, min_x, max_x))
-    
-        groups.sort(key=lambda t: t[1])
-    
-        merged = []
-        for key, min_x, max_x in groups:
-            if not merged:
-                merged.append({'keys': [key], 'min': min_x, 'max': max_x})
+
+        if not items:
+            return []
+
+        # ---- Order-independent tolerance clustering (union-find) ----
+        n = len(items)
+        uf_parent = list(range(n))
+        uf_rank = [0] * n
+
+        def uf_find(i):
+            while uf_parent[i] != i:
+                uf_parent[i] = uf_parent[uf_parent[i]]
+                i = uf_parent[i]
+            return i
+
+        def uf_union(a, b):
+            ra, rb = uf_find(a), uf_find(b)
+            if ra == rb:
+                return
+            if uf_rank[ra] < uf_rank[rb]:
+                uf_parent[ra] = rb
+            elif uf_rank[ra] > uf_rank[rb]:
+                uf_parent[rb] = ra
             else:
-                last = merged[-1]
-                if min_x <= last['max']:
-                    last['keys'].append(key)
-                    last['max'] = max(last['max'], max_x)
-                else:
-                    merged.append({'keys': [key], 'min': min_x, 'max': max_x})
-    
-        return merged
+                uf_parent[rb] = ra
+                uf_rank[ra] += 1
+
+        # Reduce comparisons by bucketing on start energy
+        start_bins = {}
+        for i, (_, es, ee) in enumerate(items):
+            b = int(np.floor(es / tol_E))
+            for bb in (b - 1, b, b + 1):
+                for j in start_bins.get(bb, []):
+                    _, es2, ee2 = items[j]
+                    if abs(es - es2) <= tol_E and abs(ee - ee2) <= tol_E:
+                        uf_union(i, j)
+            start_bins.setdefault(b, []).append(i)
+
+        clusters = {}
+        for i, (key, es, ee) in enumerate(items):
+            r = uf_find(i)
+            clusters.setdefault(r, {"keys": [], "starts": [], "ends": []})
+            clusters[r]["keys"].append(key)
+            clusters[r]["starts"].append(es)
+            clusters[r]["ends"].append(ee)
+
+        out = []
+        for c in clusters.values():
+            ref_start = float(np.median(c["starts"]))
+            ref_end = float(np.median(c["ends"]))
+            out.append({"keys": c["keys"], "min": ref_start, "max": ref_end})
+
+        out.sort(key=lambda g: (g.get("min", 0.0), g.get("max", 0.0)))
+        return out
 
     def set_group_visibility(self, filter_str: str, visible: bool, source: str = "group"):
         """
@@ -279,6 +370,10 @@ class DataMixin:
                                 if getattr(obj, "ndim", 0) != 1:
                                     return
                                 if getattr(obj, "size", 0) == 0:
+                                    return
+                                # Prefer data from the "measurement" group only; ignore "plot_1" and other derived groups.
+                                norm = "/" + str(name).strip("/") + "/"
+                                if "/measurement/" not in norm:
                                     return
                                 # Require channel substring match in relpath
                                 if filter_str and filter_str not in name:
@@ -794,7 +889,7 @@ def lookup_energy(viewer, abs_path: str, parent: str, length: int):
                 search_roots.append("")
             # Candidate names for the energy axis can be extended via the
             # channel mapping ("Energy" role).
-            candidates = ["x", "energy", "photon_energy"]
+            candidates = ["pcap_energy_av", "mono_traj_energy", "x", "energy", "photon_energy"]
             try:
                 cc = getattr(viewer, "channel_config", None)
                 if cc is not None:
@@ -862,6 +957,9 @@ def collect_available_1d_datasets(self):
                             if isinstance(obj, h5py.Dataset):
                                 shp = tuple(getattr(obj, "shape", ()) or ())
                                 if len(shp) == 1:
+                                    norm = "/" + str(name).strip("/") + "/"
+                                    if "/measurement/" not in norm:
+                                        return
                                     s = name.lstrip("/")
                                     rels.add(s)
                         except Exception:

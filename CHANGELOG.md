@@ -211,3 +211,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Confirmation dialog when enabling “Sum up” across multiple energy regions.
+
+
+## [2.3.6] – 2026-01-28
+
+### Fixed
+- Decomposition (PCA/NMF/MCR): prevented crashes on datasets containing NaNs by trimming to the common energy overlap, auto-repairing isolated interior NaNs, and prompting the user before interpolating larger NaN gaps; aligned behavior with CSV export.
+- Raw-tree “energy regions”: corrected unexpected region splitting during group loading by grouping datasets only by start/end energies with a tolerance (≤ 0.01 eV), independent of NaNs in the signal.
+- Processed Data: when *Group BG* is enabled and *Subtract BG* is unchecked, individual background curves are now visualized correctly.
+- Plotted Data: *Clear all* no longer removes the grid (now preserves grid settings like *Clear Plotted*).
+
+### Changed
+- Help → Usage updated to document the new right-click edit actions for annotation and legend.
+- Package maintenance: removed an unused internal module (`state.py`).
+
+### Added
+- Plotted Data: a full-featured *Edit annotation* dialog (right-click annotation) with font size, font style (bold/italic/underline), font color, optional background color, padding control, and a quick symbol inserter , as well as a context tooltip (“Right click to edit”) when hovering the annotation.
+- Plotted Data: *Legend style* editor (right-click legend) with transparency, margins (padding), font size, and font style, plus the same hover tooltip (“Right click to edit”).
