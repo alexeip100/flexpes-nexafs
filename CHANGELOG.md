@@ -228,3 +228,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Plotted Data: a full-featured *Edit annotation* dialog (right-click annotation) with font size, font style (bold/italic/underline), font color, optional background color, padding control, and a quick symbol inserter , as well as a context tooltip (“Right click to edit”) when hovering the annotation.
 - Plotted Data: *Legend style* editor (right-click legend) with transparency, margins (padding), font size, and font style, plus the same hover tooltip (“Right click to edit”).
+
+
+## [2.3.7] – 2026-01-29
+
+### Fixed
+- Group loading / plotting robustness: malformed or empty (“0-length” / scalar) 1D datasets no longer prevent plotting of valid spectra; group-loading (e.g. *All in TEY*) now skips invalid datasets instead of aborting with `len() of unsized object`.
+
+### Changed
+- Energy regions for interrupted scans: region grouping can infer the intended scan window from an entry’s `title` string and collapses aborted/partial scans into a single region labeled `(E_start – unfinished)` when appropriate (fallback to measured start/end if the title cannot be parsed).
+- Curve summation UX: replaced simple “sum all visible” behavior with an interactive summation workflow that materializes summed curves as first-class processed curves while optionally unchecking their constituents.
+- Legend tooltip in the Plotted Data tab is made context-aware (dependent on the legend mode).
+
+### Added
+- Curve summation dialog (Processed Data):
+  - Drag-and-drop grouping of available curves into editable groups (`Group1`, `Group2`, …).
+  - Prevents duplicate group names (warning on OK).
+  - Supports single-curve groups (creates an identity summed curve that keeps the group name).
+  - Summed curves inherit the same Region as their constituents.
+- Help → Usage updated to describe energy regions (including “unfinished” grouping) and the new curve summation workflow.

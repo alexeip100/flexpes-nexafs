@@ -85,7 +85,7 @@ that exist in your HDF5 files.
 
 - **Raw Data Tree (right of plot):**  
   A dedicated tree for raw data inspection. Datasets are grouped into
-  energy-dependent “regions” (e.g. absorption edges). Checkboxes on group
+  energy-dependent “regions” (e.g. absorption edges). Regions are determined primarily from each entry’s scan energy span; when the entry title contains the intended scan endpoints, the app uses those intended values. Interrupted/unfinished scans are collapsed under a single region label like “(E_start – unfinished)” to avoid creating many nearly-identical regions. Checkboxes on group
   nodes allow quick selection or deselection of an entire edge, while
   individual items allow fine-grained control of which curves are visible.
 
@@ -110,11 +110,23 @@ that exist in your HDF5 files.
   Choose which dataset within the entry should be used as I₀. Only used
   when **Normalize by I₀?** is checked.
 
-- **Sum them up?**  
-  When checked, multiple visible curves are summed into one “Summed Curve”.
-  This is useful for combining repeated sweeps to improve statistics.
-  The summed result then behaves like any other main curve for background
-  subtraction and post-normalization.
+- **Sum up?** *(button)*  
+  Opens the **Curve summation** dialog, where you can combine spectra into one or more *summed curves*.
+
+  **Workflow:**
+  - All currently available curves appear under **Available curves**.
+  - **Drag-and-drop** one or several curves into a group under **Summation groups**.
+  - Group names are editable (**double‑click a group name to edit**). Group names must be unique.
+  - **+ Group** creates a new group (Group1, Group2, …). **− Group** deletes the selected group and moves its contents back to **Available curves**.
+  - Press **OK** to create the summed curves.
+
+  **Result:**
+  - Each group produces a new curve with the group name (e.g. “sample1”). Single-curve groups keep the group name.
+  - The summed curves appear in the **same Region** as their constituents.
+  - Constituents are unchecked by default; the new summed curves are checked.
+  - Summed curves behave like normal curves for BG subtraction, normalization, passing to Plotted, and export.
+
+  **Energy alignment:** If curves have slightly different energy grids, the app aligns them automatically using common overlap and interpolation.
 
 
 - **Group BG:** *(checkbox)*

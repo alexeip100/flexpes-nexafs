@@ -4,6 +4,7 @@ import os
 import time
 import h5py
 import numpy as np
+import re
 import logging
 logger = logging.getLogger(__name__)
 from importlib.resources import files
@@ -198,34 +199,201 @@ class DataMixin:
             # Give up after retries
             raise last_error or e
 
-    def group_datasets(self):
-        """Group currently loaded 1D datasets into energy 'regions'.
+    def group_datasets(self, include_sums: bool = True):
+        """Group currently loaded 1D datasets into energy "regions".
 
-        A region is defined ONLY by the energy start and energy end of the scan
-        (derived from the x-axis). Small numerical deviations (< 0.01 eV) in
-        start/end must NOT split regions.
+        Default behavior (fallback): regions are determined from the measured
+        energy axis start/end (pcap_energy_av via lookup_energy).
 
-        This function is intentionally robust to NaNs in the energy axis
-        (pcap_energy_av). If x contains NaNs, we use finite values only.
-        If no finite x can be found, we fall back to a simple index axis.
+        Improved behavior (preferred): if the HDF5 entry contains a scan "title"
+        string that encodes the intended scan window (E_start, E_end), then we
+        group by those intended endpoints instead of the measured endpoints.
+
+        This helps collapse multiple interrupted scans (same intended start/end
+        but truncated measured end) into a single region labeled as
+        "(E_start – unfinished)".
+
+        If title parsing fails for an entry, we fall back to the measured
+        start/end behavior.
 
         Returns
         -------
         list of dict
-            Each dict has keys: "keys" (list of dataset keys), "min" (region start),
-            "max" (region end).
+            Each dict has keys:
+              - "keys": list of dataset keys
+              - "min": representative region start (float, used for sorting)
+              - "max": representative region end (float, used for sorting)
+              - "label": pre-formatted label for the region (optional)
+              - "unfinished": bool (optional)
         """
-        tol_E = 0.01  # eV
 
-        # Collect (key, E_start, E_end) for every currently loaded curve
+        tol_E = 0.01  # eV tolerance for grouping endpoints
+
+        # Region overrides (used for synthetic curves like summed sub-groups)
+        overrides = getattr(self, "_region_overrides", {}) or {}
+
+        # Cache parsed intended endpoints per (abs_path, entry_name)
+        if not hasattr(self, "_intent_cache"):
+            self._intent_cache = {}
+
+        float_re = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+        def _safe_float(tok: str):
+            m = float_re.search(str(tok))
+            return float(m.group(0)) if m else None
+
+        def _extract_entry_name(hdf5_path: str):
+            p = str(hdf5_path).lstrip("/")
+            if not p:
+                return None
+            return p.split("/", 1)[0]
+
+        def _read_entry_title(abs_path: str, entry_name: str):
+            cache_key = (abs_path, entry_name)
+            if cache_key in self._intent_cache:
+                return self._intent_cache[cache_key]
+
+            title = None
+            try:
+                with self._open_h5_read(abs_path) as f:
+                    # Typical: /entryXXXX/title as a dataset
+                    if entry_name in f:
+                        g = f[entry_name]
+                        if "title" in g:
+                            try:
+                                t = g["title"][()]
+                                if isinstance(t, bytes):
+                                    title = t.decode("utf-8", errors="ignore")
+                                else:
+                                    title = str(t)
+                            except Exception:
+                                title = None
+                        # Sometimes "title" can be an attribute
+                        if title is None and hasattr(g, "attrs"):
+                            try:
+                                t = g.attrs.get("title", None)
+                                if isinstance(t, bytes):
+                                    title = t.decode("utf-8", errors="ignore")
+                                elif t is not None:
+                                    title = str(t)
+                            except Exception:
+                                title = None
+            except Exception:
+                title = None
+
+            self._intent_cache[cache_key] = title
+            return title
+
+        def _parse_intended_energy(title: str, e_start_meas: float, e_end_meas: float):
+            """Parse intended (E_start, E_end) from a scan title.
+
+            We look for patterns: <motor_name> <float> <float>. The title often
+            contains two motors; we try to pick the energy motor based on name
+            heuristics and closeness to measured start.
+            """
+            if not title:
+                return None
+
+            toks = str(title).split()
+            triplets = []  # (motor, e0, e1)
+            for i in range(len(toks) - 2):
+                motor = toks[i]
+                e0 = _safe_float(toks[i + 1])
+                e1 = _safe_float(toks[i + 2])
+                if e0 is None or e1 is None:
+                    continue
+                # Basic sanity
+                if not (np.isfinite(e0) and np.isfinite(e1)):
+                    continue
+                if abs(e1 - e0) < 1e-6:
+                    continue
+                triplets.append((motor, float(e0), float(e1)))
+
+            if not triplets:
+                return None
+
+            # Prefer motors that look like energy/mono
+            preferred = []
+            for motor, e0, e1 in triplets:
+                m = str(motor).lower()
+                if ("mono" in m) or ("energy" in m) or (m in {"e", "en"}):
+                    preferred.append((motor, e0, e1))
+            candidates = preferred if preferred else triplets
+
+            # Choose candidate with closest start to measured start
+            best = None
+            best_cost = None
+            for motor, e0, e1 in candidates:
+                es, ee = (e0, e1) if e1 >= e0 else (e1, e0)
+                # Energy plausibility
+                if ee <= es:
+                    continue
+                if not (0.0 <= es <= 50000.0 and 0.0 <= ee <= 50000.0):
+                    continue
+                cost = abs(es - e_start_meas)
+                if best_cost is None or cost < best_cost:
+                    best_cost = cost
+                    best = (es, ee)
+            return best
+
+        def _estimate_step(x_use: np.ndarray):
+            try:
+                xf = x_use[np.isfinite(x_use)]
+                if xf.size < 3:
+                    return 0.0
+                d = np.diff(xf)
+                d = d[np.isfinite(d)]
+                # keep positive diffs only
+                d = d[d > 0]
+                if d.size == 0:
+                    return 0.0
+                # remove obvious outliers
+                med = float(np.median(d))
+                d = d[(d > 0.1 * med) & (d < 10 * med)]
+                return float(np.median(d)) if d.size else med
+            except Exception:
+                return 0.0
+
+        # Collect items as (key, region_start, region_end, label, unfinished_flag)
         items = []
+        def _is_sum_hdf5_path(hdf5_path: str) -> bool:
+            try:
+                p = str(hdf5_path).lstrip("/")
+                return p.startswith("__SUM__/")
+            except Exception:
+                return False
+
         for key, y_data in getattr(self, "plot_data", {}).items():
             try:
                 parts = str(key).split("##", 1)
                 if len(parts) != 2:
                     continue
                 abs_path, hdf5_path = parts
+
+                # Use explicit region override when provided (keeps summed curves in the same Region as sources)
+                if include_sums and key in overrides:
+                    try:
+                        ov = overrides.get(key) or {}
+                        region_start = float(ov.get("start"))
+                        region_end = float(ov.get("end"))
+                        unfinished = bool(ov.get("unfinished", False))
+                        label = str(ov.get("label") or "")
+                        if not label:
+                            if unfinished:
+                                label = f"({region_start:.3f}–unfinished)"
+                            else:
+                                label = f"({region_start:.3f}–{region_end:.3f} eV)"
+                        items.append((key, region_start, region_end, label, unfinished))
+                        continue
+                    except Exception:
+                        # If override is malformed, fall back to computed behavior
+                        pass
+                if not include_sums and _is_sum_hdf5_path(hdf5_path):
+                    continue
                 parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+                entry_name = _extract_entry_name(hdf5_path)
+                if not entry_name:
+                    continue
 
                 if y_data is None:
                     continue
@@ -233,40 +401,69 @@ class DataMixin:
                 if y_arr.size == 0:
                     continue
 
-                # Energy axis lookup (prefers pcap_energy_av via lookup_energy)
+                # Measured energy axis (prefers pcap_energy_av)
                 try:
                     x_data = lookup_energy(self, abs_path, parent, int(y_arr.size))
                 except Exception:
                     x_data = np.arange(int(y_arr.size), dtype=float)
-
                 if getattr(x_data, "size", 0) == 0:
                     continue
                 x_arr = np.asarray(x_data).ravel()
 
-                # Match plotted length
                 n = int(min(x_arr.size, y_arr.size))
                 if n <= 0:
                     continue
                 x_use = x_arr[:n]
-
-                # Determine scan start/end using finite x only
                 finite = np.isfinite(x_use)
                 if not np.any(finite):
-                    # No usable energy axis; fall back to index axis for grouping
                     x_use = np.arange(n, dtype=float)
                     finite = np.isfinite(x_use)
 
-                # Use first and last finite x values as endpoints
                 i0 = int(np.argmax(finite))
                 i1 = int(len(finite) - 1 - np.argmax(finite[::-1]))
-                e_start = float(x_use[i0])
-                e_end = float(x_use[i1])
-                if not (np.isfinite(e_start) and np.isfinite(e_end)):
+                e_start_meas = float(x_use[i0])
+                e_end_meas = float(x_use[i1])
+                if not (np.isfinite(e_start_meas) and np.isfinite(e_end_meas)):
                     continue
-                if e_end < e_start:
-                    e_start, e_end = e_end, e_start
+                if e_end_meas < e_start_meas:
+                    e_start_meas, e_end_meas = e_end_meas, e_start_meas
 
-                items.append((key, e_start, e_end))
+                step = _estimate_step(x_use)
+                tol_start = max(0.02, 2.0 * step) if step > 0 else 0.02
+                tol_end_match = max(0.05, 3.0 * step) if step > 0 else 0.05
+                tol_unfinished = max(0.2, 5.0 * step) if step > 0 else 0.2
+
+                # Intended endpoints from title (if available)
+                intended = None
+                title = _read_entry_title(abs_path, entry_name)
+                if title:
+                    intended = _parse_intended_energy(title, e_start_meas, e_end_meas)
+                    # Validate intention vs measured start
+                    if intended is not None:
+                        es_i, ee_i = intended
+                        if abs(es_i - e_start_meas) > tol_start:
+                            intended = None
+                        # If measured end is *above* intended end by too much, likely wrong parse
+                        if intended is not None and (e_end_meas > ee_i + tol_end_match):
+                            intended = None
+
+                if intended is None:
+                    # Fallback: group by measured endpoints
+                    region_start = e_start_meas
+                    region_end = e_end_meas
+                    unfinished = False
+                    label = f"({region_start:.3f}–{region_end:.3f} eV)"
+                else:
+                    es_i, ee_i = intended
+                    region_start = float(es_i)
+                    region_end = float(ee_i)
+                    unfinished = (e_end_meas < (ee_i - tol_unfinished))
+                    if unfinished:
+                        label = f"({region_start:.3f}–unfinished)"
+                    else:
+                        label = f"({region_start:.3f}–{region_end:.3f} eV)"
+
+                items.append((key, region_start, region_end, label, unfinished))
             except Exception:
                 continue
 
@@ -274,9 +471,9 @@ class DataMixin:
             return []
 
         # ---- Order-independent tolerance clustering (union-find) ----
-        n = len(items)
-        uf_parent = list(range(n))
-        uf_rank = [0] * n
+        n_items = len(items)
+        uf_parent = list(range(n_items))
+        uf_rank = [0] * n_items
 
         def uf_find(i):
             while uf_parent[i] != i:
@@ -298,30 +495,47 @@ class DataMixin:
 
         # Reduce comparisons by bucketing on start energy
         start_bins = {}
-        for i, (_, es, ee) in enumerate(items):
+        for i, (_, es, ee, _lbl, unfinished) in enumerate(items):
             b = int(np.floor(es / tol_E))
             for bb in (b - 1, b, b + 1):
                 for j in start_bins.get(bb, []):
-                    _, es2, ee2 = items[j]
+                    _k2, es2, ee2, _lbl2, unfinished2 = items[j]
+                    if unfinished != unfinished2:
+                        continue
                     if abs(es - es2) <= tol_E and abs(ee - ee2) <= tol_E:
                         uf_union(i, j)
             start_bins.setdefault(b, []).append(i)
 
         clusters = {}
-        for i, (key, es, ee) in enumerate(items):
+        for i, (key, es, ee, lbl, unfinished) in enumerate(items):
             r = uf_find(i)
-            clusters.setdefault(r, {"keys": [], "starts": [], "ends": []})
+            clusters.setdefault(r, {"keys": [], "starts": [], "ends": [], "labels": [], "unfinished": unfinished})
             clusters[r]["keys"].append(key)
             clusters[r]["starts"].append(es)
             clusters[r]["ends"].append(ee)
+            clusters[r]["labels"].append(lbl)
 
         out = []
         for c in clusters.values():
             ref_start = float(np.median(c["starts"]))
             ref_end = float(np.median(c["ends"]))
-            out.append({"keys": c["keys"], "min": ref_start, "max": ref_end})
+            unfinished = bool(c.get("unfinished", False))
+            # Prefer the most common label (stable) rather than formatting anew
+            label = None
+            try:
+                from collections import Counter
+                label = Counter(c.get("labels", [])).most_common(1)[0][0]
+            except Exception:
+                label = None
 
-        out.sort(key=lambda g: (g.get("min", 0.0), g.get("max", 0.0)))
+            d = {"keys": c["keys"], "min": ref_start, "max": ref_end}
+            if label:
+                d["label"] = label
+            if unfinished:
+                d["unfinished"] = True
+            out.append(d)
+
+        out.sort(key=lambda g: (g.get("min", 0.0), g.get("unfinished", False), g.get("max", 0.0)))
         return out
 
     def set_group_visibility(self, filter_str: str, visible: bool, source: str = "group"):
@@ -385,6 +599,12 @@ class DataMixin:
                                     try:
                                         y = obj[()]
                                     except Exception:
+                                        return
+                                    try:
+                                        y = np.asarray(y)
+                                    except Exception:
+                                        return
+                                    if y.ndim != 1 or y.size == 0:
                                         return
                                     # Only populate y if absent; avoid clobbering existing data.
                                     if key not in self.plot_data:
@@ -510,6 +730,13 @@ class DataMixin:
         for key in keys_to_remove:
             try:
                 self.plot_data.pop(key, None)
+            except Exception:
+                pass
+            # Drop intrinsic display name (used for synthetic curves)
+            try:
+                cdn = getattr(self, "curve_display_names", None)
+                if isinstance(cdn, dict):
+                    cdn.pop(key, None)
             except Exception:
                 pass
             try:

@@ -32,6 +32,7 @@ from .compat import trapezoid
 import matplotlib.pyplot as plt
 plt.ioff()
 from PyQt5.QtCore import Qt
+import re
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
@@ -302,6 +303,364 @@ class ProcessingMixin:
             pass
 
         self.update_plot_processed()
+
+    # ------------------------------------------------------------------
+    # Advanced curve summation (materialises summed curves)
+    # ------------------------------------------------------------------
+    def _extract_entry_number_for_key(self, key: str):
+        """Try to extract an entry number (int) from a dataset key."""
+        try:
+            parts = str(key).split("##", 1)
+            if len(parts) != 2:
+                return None
+            _abs, hdf5_path = parts
+            seg = str(hdf5_path).lstrip("/").split("/", 1)[0]
+            m = re.search(r"entry\s*(\d+)", seg, flags=re.IGNORECASE)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            pass
+        return None
+
+    def _auto_sum_name(self, keys):
+        """Generate a compact default name for a group of curves.
+
+        Preference: entry number ranges -> 'entry8428–8430 (n=3)'
+        Fallback: '<first>…<last> (n=...)'
+        """
+        try:
+            keys = list(keys or [])
+            n = len(keys)
+            if n <= 0:
+                return "Sum"
+
+            nums = []
+            for k in keys:
+                v = self._extract_entry_number_for_key(k)
+                if v is None:
+                    nums = []
+                    break
+                nums.append(int(v))
+
+            if nums:
+                nums = sorted(set(nums))
+                # Build contiguous runs
+                runs = []
+                a = b = nums[0]
+                for x in nums[1:]:
+                    if x == b + 1:
+                        b = x
+                    else:
+                        runs.append((a, b))
+                        a = b = x
+                runs.append((a, b))
+
+                def fmt_run(r):
+                    a, b = r
+                    return f"{a}–{b}" if a != b else f"{a}"
+
+                body = ",".join(fmt_run(r) for r in runs)
+                name = f"entry{body} (n={n})"
+                # Keep it reasonably short
+                if len(name) > 48:
+                    name = f"entry{nums[0]}–{nums[-1]} (n={n})"
+                return name
+
+            # Fallback using display labels
+            def disp(k):
+                try:
+                    # Use plotted custom labels when available
+                    cl = getattr(self, "custom_labels", {}) or {}
+                    if k in cl and cl[k]:
+                        return str(cl[k])
+                except Exception:
+                    pass
+                try:
+                    parts = str(k).split("##", 1)
+                    return str(parts[1]) if len(parts) == 2 else str(k)
+                except Exception:
+                    return str(k)
+
+            first = disp(keys[0])
+            last = disp(keys[-1])
+            return f"{first}…{last} (n={n})"
+        except Exception:
+            return "Sum"
+
+    def open_curve_summation_dialog(self):
+        """Open the Curve summation dialog and create summed curves."""
+        try:
+            plot_data = getattr(self, "plot_data", {}) or {}
+            raw_vis = getattr(self, "raw_visibility", {}) or {}
+            keys = [k for k in plot_data.keys() if raw_vis.get(k, False)]
+        except Exception:
+            keys = []
+
+        from PyQt5.QtWidgets import QMessageBox
+        if len(keys) < 1:
+            QMessageBox.information(self, "Curve summation", "Select (check) at least one curve.")
+            return
+
+        # Build display names
+        curves = []
+        for k in keys:
+            disp = None
+            try:
+                cl = getattr(self, "custom_labels", {}) or {}
+                if k in cl and cl[k]:
+                    disp = str(cl[k])
+            except Exception:
+                disp = None
+            if not disp:
+                try:
+                    parts = str(k).split("##", 1)
+                    disp = self.shorten_label(parts[1]) if (len(parts) == 2 and hasattr(self, "shorten_label")) else (parts[1] if len(parts) == 2 else str(k))
+                except Exception:
+                    disp = str(k)
+            curves.append((k, disp))
+
+        try:
+            from .widgets.curve_summation_dialog import CurveSummationDialog
+        except Exception:
+            QMessageBox.warning(self, "Curve summation", "CurveSummationDialog could not be imported.")
+            return
+
+        default_name = self._auto_sum_name([k for k, _d in curves])
+        dlg = CurveSummationDialog(curves, parent=self)
+        if dlg.exec_() != dlg.Accepted:
+            return
+
+        groups = dlg.get_groups()
+        created = []
+        for g in groups:
+            try:
+                gkeys = list(g.get("keys", []) or [])
+                if len(gkeys) < 1:
+                    continue
+                gname = str(g.get("name") or "Sum").strip() or "Sum"
+                sum_key = self._create_summed_curve(gkeys, gname)
+                if sum_key:
+                    created.append((sum_key, gkeys))
+            except Exception:
+                continue
+
+        if not created:
+            QMessageBox.information(self, "Curve summation", "No summed curves were created.")
+            return
+
+        # Default visibility: hide components, show sums
+        try:
+            for sum_key, src_keys in created:
+                for sk in src_keys:
+                    try:
+                        self.raw_visibility[sk] = False
+                    except Exception:
+                        pass
+                try:
+                    self.raw_visibility[sum_key] = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            self.update_plot_processed()
+        except Exception:
+            pass
+        try:
+            self.update_plot_raw()
+        except Exception:
+            pass
+
+    def _create_summed_curve(self, keys, name: str):
+        """Create one synthetic summed curve from the given dataset keys.
+
+        The new curve is stored in self.plot_data and uses a synthetic parent
+        path "__SUM__/N" so that energy axes can be cached.
+
+        Summation uses common overlap + interpolation. If I0 normalization is
+        active, each component curve is normalized before interpolation.
+        """
+        import numpy as np
+
+        keys = list(keys or [])
+        if len(keys) < 1:
+            return None
+
+        # Choose an anchor file path for the synthetic key (needed for caches)
+        abs_anchor = None
+        parsed = []  # (abs_path, parent, y)
+        for k in keys:
+            parts = str(k).split("##", 1)
+            if len(parts) != 2:
+                continue
+            abs_path, hdf5_path = parts
+            parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+            y = (getattr(self, "plot_data", {}) or {}).get(k)
+            if y is None:
+                continue
+            try:
+                y = np.asarray(y, dtype=float).ravel()
+            except Exception:
+                continue
+            if y.size < 2:
+                continue
+            if abs_anchor is None:
+                abs_anchor = abs_path
+            parsed.append((k, abs_path, parent, y))
+
+        if abs_anchor is None or len(parsed) < 1:
+            return None
+
+        # Build (x, y) pairs (apply normalization per curve if enabled)
+        xy = []
+        for k, abs_path, parent, y in parsed:
+            try:
+                x = lookup_energy(self, abs_path, parent, int(y.size))
+                x = np.asarray(x, dtype=float).ravel()
+                n = int(min(x.size, y.size))
+                if n < 2:
+                    continue
+                x = x[:n]
+                yy = y[:n]
+                # Apply I0 normalization if active (per-curve)
+                try:
+                    yy = apply_normalization(self, abs_path, parent, yy)
+                    yy = np.asarray(yy, dtype=float).ravel()
+                except Exception:
+                    yy = np.asarray(yy, dtype=float).ravel()
+                # Drop non-finite
+                m = np.isfinite(x) & np.isfinite(yy)
+                if np.count_nonzero(m) < 2:
+                    continue
+                x = x[m]
+                yy = yy[m]
+                # Ensure monotonic increasing x for np.interp
+                order = np.argsort(x)
+                x = x[order]
+                yy = yy[order]
+                # Remove duplicate x
+                dx = np.diff(x)
+                keep = np.ones_like(x, dtype=bool)
+                keep[1:] = dx != 0
+                x = x[keep]
+                yy = yy[keep]
+                if x.size < 2:
+                    continue
+                xy.append((x, yy))
+            except Exception:
+                continue
+
+        if len(xy) < 1:
+            return None
+
+        # Common overlap
+        lo = max(float(np.min(x)) for x, _y in xy)
+        hi = min(float(np.max(x)) for x, _y in xy)
+        if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+            return None
+
+        # Reference grid: longest curve segment within [lo, hi]
+        best_x = None
+        best_n = -1
+        for x, _y in xy:
+            m = (x >= lo) & (x <= hi)
+            nn = int(np.count_nonzero(m))
+            if nn > best_n:
+                best_n = nn
+                best_x = x[m]
+        if best_x is None or best_x.size < 2:
+            return None
+
+        x_common = np.asarray(best_x, dtype=float).ravel()
+
+        # Interpolate + sum
+        y_sum = np.zeros_like(x_common, dtype=float)
+        for x, y in xy:
+            m = (x >= lo) & (x <= hi)
+            x_use = x[m]
+            y_use = y[m]
+            if x_use.size < 2:
+                continue
+            try:
+                y_i = np.interp(x_common, x_use, y_use)
+            except Exception:
+                continue
+            y_sum = y_sum + y_i
+
+        # Create synthetic key
+        serial = int(getattr(self, "_sum_serial", 0) or 0) + 1
+        try:
+            setattr(self, "_sum_serial", serial)
+        except Exception:
+            pass
+        parent_sum = f"__SUM__/{serial}"
+        hdf5_path_sum = f"{parent_sum}/sum"
+        sum_key = f"{abs_anchor}##{hdf5_path_sum}"
+
+        # Store y and cache x for both cache key formats used in the codebase
+        try:
+            self.plot_data[sum_key] = np.asarray(y_sum, dtype=float)
+        except Exception:
+            return None
+        try:
+            # Energy caches (two different key formats are used in different parts of the app)
+            if not hasattr(self, "energy_cache") or self.energy_cache is None:
+                self.energy_cache = {}
+            self.energy_cache[f"{abs_anchor}::{parent_sum}"] = (x_common, True)
+            self.energy_cache[f"{abs_anchor}##{parent_sum}"] = (x_common, True)
+        except Exception:
+            pass
+
+        # Provide a nice intrinsic label for Raw/Processed trees and the Plotted curve list.
+        # IMPORTANT: Do NOT put this into `custom_labels`, because that mapping is reserved
+        # for user-defined legend labels on the Plotted Data tab. Otherwise, renaming in the
+        # Plotted legend would unexpectedly rename curves back in the Processed tab.
+        try:
+            if not hasattr(self, "curve_display_names") or self.curve_display_names is None:
+                self.curve_display_names = {}
+            self.curve_display_names[sum_key] = str(name)
+        except Exception:
+            pass
+
+        # Remember metadata (optional)
+        try:
+            if not hasattr(self, "_summed_curve_sources") or self._summed_curve_sources is None:
+                self._summed_curve_sources = {}
+            self._summed_curve_sources[sum_key] = list(keys)
+        except Exception:
+            pass
+
+        # Inherit region assignment from constituents (keep sums in the same Region)
+        try:
+            if not hasattr(self, "_region_overrides") or self._region_overrides is None:
+                self._region_overrides = {}
+            # Use the first constituent as the reference for region placement
+            ref_key = keys[0] if keys else None
+            if ref_key:
+                try:
+                    groups = self.group_datasets(include_sums=False)
+                except Exception:
+                    groups = []
+                ref_group = None
+                for g in groups or []:
+                    try:
+                        if ref_key in (g.get("keys") or []):
+                            ref_group = g
+                            break
+                    except Exception:
+                        continue
+                if ref_group:
+                    self._region_overrides[sum_key] = {
+                        "start": float(ref_group.get("min")),
+                        "end": float(ref_group.get("max")),
+                        "label": str(ref_group.get("label") or ""),
+                        "unfinished": bool(ref_group.get("unfinished", False)),
+                    }
+        except Exception:
+            pass
+
+        return sum_key
 
     def _on_bg_subtract_toggled(self, state):
         """Enable/disable post‑normalisation combo and update plot."""

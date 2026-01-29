@@ -322,7 +322,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             from . import __version__ as _PKG_VERSION
             from . import __date__ as _PKG_DATE
         except Exception:
-            _PKG_VERSION = "2.3.6"
+            _PKG_VERSION = "2.3.7"
             _PKG_DATE = "2026-01-28"
         self.VERSION_NUMBER = str(_PKG_VERSION)
         self.CREATION_DATETIME = str(_PKG_DATE)
@@ -347,7 +347,12 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
 
         self.plotted_curves = set()
         self.plotted_lines = {}
+        # `custom_labels` stores ONLY user-defined legend labels ("User-defined" legend mode).
+        # Intrinsic curve names (e.g. synthetic summed-group names) are stored separately in
+        # `curve_display_names`, so that renaming in the Plotted legend does not affect the
+        # curve names shown in Raw/Processed trees.
         self.custom_labels = {}
+        self.curve_display_names = {}
 
         self._sum_serial = 0  # unique id for summed curves in Plotted
         # For Raw Data panel: each dataset's visibility
@@ -544,8 +549,17 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.proc_controls_top_layout.addWidget(self.combo_norm)
         self.combo_norm.setEnabled(False)
 
+        # Advanced curve summation creates one or more new "summed" curves that can be
+        # processed like any other curve. We keep the legacy checkbox for internal
+        # compatibility but hide it from the UI.
         self.chk_sum = QCheckBox("Sum up?")
-        self.proc_controls_top_layout.addWidget(self.chk_sum)
+        try:
+            self.chk_sum.setVisible(False)
+        except Exception:
+            pass
+        self.btn_sum = QPushButton("Sum up?")
+        self.btn_sum.setToolTip("Create summed curves from selected spectra")
+        self.proc_controls_top_layout.addWidget(self.btn_sum)
 
         # Group background (Automatic BG + multiple selection)
         self.chk_group_bg = QCheckBox("Group BG")
@@ -582,6 +596,13 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             self.chk_sum.stateChanged.connect(self._on_sum_toggled)
         else:
             self.chk_sum.stateChanged.connect(self.update_plot_processed)
+
+        # Advanced summation dialog (preferred)
+        try:
+            if hasattr(self, "open_curve_summation_dialog"):
+                self.btn_sum.clicked.connect(self.open_curve_summation_dialog)
+        except Exception:
+            pass
         self.chk_normalize.stateChanged.connect(self._on_normalize_toggled)
         self.combo_norm.currentIndexChanged.connect(self.update_plot_processed)
 
@@ -659,6 +680,11 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.plotted_ax.set_xlabel("Photon energy (eV)")
         self.plotted_ax.set_ylabel("XAS intensity (arb. units)")
         self.canvas_plotted = FigureCanvas(self.canvas_plotted_fig)
+        try:
+            self._plotted_hover_cid = self.canvas_plotted.mpl_connect("motion_notify_event", self._on_plotted_hover_hint)
+        except Exception:
+            pass
+
         self.canvas_plotted.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas_plotted_fig.tight_layout()
 

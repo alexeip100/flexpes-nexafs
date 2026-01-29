@@ -415,9 +415,25 @@ class PlottingMixin:
 
     # ------------ Waterfall ------------
     def _filter_empty_plot_data(self):
-        """Drop entries with zero-length arrays to avoid reduction errors."""
+        """Drop invalid 1D payloads (empty arrays, scalars) from plot_data.
+
+        Some HDF5 datasets may be empty or unexpectedly scalar-like. These can
+        break plotting (e.g. len() of unsized object). We keep only 1D arrays
+        with at least one element.
+        """
         try:
-            self.plot_data = {k: v for k, v in self.plot_data.items() if getattr(v, "size", 0) > 0}
+            cleaned = {}
+            for k, v in getattr(self, "plot_data", {}).items():
+                try:
+                    arr = np.asarray(v)
+                    if arr.ndim != 1:
+                        continue
+                    if arr.size == 0:
+                        continue
+                    cleaned[k] = arr
+                except Exception:
+                    continue
+            self.plot_data = cleaned
         except Exception:
             pass
 
@@ -688,7 +704,7 @@ class PlottingMixin:
                             mlen = min(len(x_data), len(y_proc))
                             if mlen < 3:
                                 continue
-                            x_use = np.asarray(x_data[:mlen], dtype=float).ravel()
+                            x_use = np.asarray(x_arr[:mlen], dtype=float).ravel()
                             y_use = np.asarray(y_proc[:mlen], dtype=float).ravel()
                             bg = bgs.get(key)
                             if bg is None:
@@ -737,26 +753,28 @@ class PlottingMixin:
                     if y_data is None:
                         skipped += 1
                         continue
-                    x_data = lookup_energy(self, abs_path, parent, len(y_data))
-                    y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
-                    mlen = min(len(x_data), len(y_proc))
-                    if mlen <= 1:
-                        skipped += 1
-                        continue
-                    main_x = np.asarray(x_data[:mlen], dtype=float).ravel()
-                    main_y = np.asarray(y_proc[:mlen], dtype=float).ravel()
-
-                    bg = bgs.get(key)
-                    if bg is None:
-                        bg = self._apply_automatic_bg_new(main_x, main_y, deg=deg, pre_edge_percent=pre, do_plot=False)
-                    bg = np.asarray(bg, dtype=float).ravel()[:mlen]
-                    subtracted = main_y - bg
-                    try:
-                        from . import processing as _p
-                        subtracted = _p._proc_safe_post_normalize(self, main_x, subtracted, norm_mode)
-                    except Exception:
-                        pass
-                    main_y = subtracted
+                    main_x, main_y = self._get_drawn_processed_xy(key)
+                    if main_x is None or main_y is None:
+                        x_data = lookup_energy(self, abs_path, parent, len(y_data))
+                        y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
+                        mlen = min(len(x_data), len(y_proc))
+                        if mlen <= 1:
+                            skipped += 1
+                            continue
+                        main_x = np.asarray(x_data[:mlen], dtype=float).ravel()
+                        main_y = np.asarray(y_proc[:mlen], dtype=float).ravel()
+                        
+                        bg = bgs.get(key)
+                        if bg is None:
+                            bg = self._apply_automatic_bg_new(main_x, main_y, deg=deg, pre_edge_percent=pre, do_plot=False)
+                        bg = np.asarray(bg, dtype=float).ravel()[:mlen]
+                        subtracted = main_y - bg
+                        try:
+                            from . import processing as _p
+                            subtracted = _p._proc_safe_post_normalize(self, main_x, subtracted, norm_mode)
+                        except Exception:
+                            pass
+                        main_y = subtracted
 
                     # Build label + metadata
                     source_file = abs_path
@@ -796,10 +814,21 @@ class PlottingMixin:
                     }
 
                     # Add to plot + list
-                    self.custom_labels[storage_key] = None
+                    if storage_key not in self.custom_labels:
+                        self.custom_labels[storage_key] = None
+
+                    # `custom_labels` holds ONLY user-defined legend labels. The plotted list should
+                    # show the intrinsic curve name (e.g. summed-group name) when available.
+                    _cl = (getattr(self, "custom_labels", {}) or {}).get(storage_key)
+                    _cl = str(_cl).strip() if isinstance(_cl, str) else ""
+                    cdn = (getattr(self, "curve_display_names", {}) or {})
+                    intrinsic_label = str(cdn.get(storage_key)).strip() if storage_key in cdn else ""
+                    display_label = intrinsic_label if intrinsic_label else origin_label
+
                     # Use an integer default linewidth (2) so users can return to the initial look
                     # using the simple size control (which only allows integers).
-                    line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>", linewidth=2.0)
+                    line_label = _cl if _cl else "<select curve name>"
+                    line, = self.plotted_ax.plot(main_x, main_y, label=line_label, linewidth=2.0)
                     self.plotted_curves.add(storage_key)
                     self.plotted_lines[storage_key] = line
                     self.original_line_data[storage_key] = (np.asarray(main_x).copy(), np.asarray(main_y).copy())
@@ -811,7 +840,7 @@ class PlottingMixin:
                         pass
                     CurveListItemWidget = globals().get("CurveListItemWidget", None)
                     if CurveListItemWidget:
-                        widget = CurveListItemWidget(origin_label, line.get_color(), storage_key)
+                        widget = CurveListItemWidget(display_label, line.get_color(), storage_key)
                         widget.colorChanged.connect(self.change_curve_color)
                         widget.visibilityChanged.connect(self.change_curve_visibility)
                         widget.styleChanged.connect(self.change_curve_style)
@@ -828,7 +857,7 @@ class PlottingMixin:
                         self.plotted_list.addItem(item)
                         self.plotted_list.setItemWidget(item, widget)
                     else:
-                        item.setText(origin_label)
+                        item.setText(display_label)
                         self.plotted_list.addItem(item)
 
                     added += 1
@@ -857,6 +886,19 @@ class PlottingMixin:
         if main_x is None or main_y is None:
             return
 
+        used_drawn_processed = False
+        try:
+            if (not self.chk_sum.isChecked()) and hasattr(self, 'data_tabs') and int(self.data_tabs.currentIndex()) == 1:
+                cb = getattr(self, 'chk_group_bg', None)
+                mode = str(getattr(self, 'combo_bg').currentText()) if hasattr(self, 'combo_bg') else ''
+                if cb is not None and cb.isEnabled() and cb.isChecked() and str(mode) in ('Automatic', 'Auto'):
+                    dx, dy = self._get_drawn_processed_xy(key)
+                    if dx is not None and dy is not None:
+                        main_x, main_y = dx, dy
+                        used_drawn_processed = True
+        except Exception:
+            used_drawn_processed = False
+
         # Post-normalization mode (used for metadata and potential library export)
         norm_mode = "None"
         try:
@@ -866,7 +908,7 @@ class PlottingMixin:
             norm_mode = "None"
 
         bg_subtracted = False
-        if self.chk_show_without_bg.isChecked():
+        if (not used_drawn_processed) and self.chk_show_without_bg.isChecked():
             background = self._compute_background(main_x, main_y)
             subtracted = main_y - background
             try:
@@ -940,10 +982,21 @@ class PlottingMixin:
         }
 
         # Add the curve to the plotted axes and list
-        self.custom_labels[storage_key] = None
+        if storage_key not in self.custom_labels:
+            self.custom_labels[storage_key] = None
+
+        # `custom_labels` holds ONLY user-defined legend labels. The plotted list should
+        # show the intrinsic curve name (e.g. summed-group name) when available.
+        _cl = (getattr(self, "custom_labels", {}) or {}).get(storage_key)
+        _cl = str(_cl).strip() if isinstance(_cl, str) else ""
+        cdn = (getattr(self, "curve_display_names", {}) or {})
+        intrinsic_label = str(cdn.get(storage_key)).strip() if storage_key in cdn else ""
+        display_label = intrinsic_label if intrinsic_label else origin_label
+
         # Use an integer default linewidth (2) so users can return to the initial look
         # using the simple size control (which only allows integers).
-        line, = self.plotted_ax.plot(main_x, main_y, label="<select curve name>", linewidth=2.0)
+        line_label = _cl if _cl else "<select curve name>"
+        line, = self.plotted_ax.plot(main_x, main_y, label=line_label, linewidth=2.0)
         self.plotted_curves.add(storage_key)
         self.plotted_lines[storage_key] = line
 
@@ -961,7 +1014,7 @@ class PlottingMixin:
         # Avoid circular import with UI; gracefully degrade if custom widget is unavailable.
         CurveListItemWidget = globals().get("CurveListItemWidget", None)
         if CurveListItemWidget:
-            widget = CurveListItemWidget(origin_label, line.get_color(), storage_key)
+            widget = CurveListItemWidget(display_label, line.get_color(), storage_key)
             widget.colorChanged.connect(self.change_curve_color)
             widget.visibilityChanged.connect(self.change_curve_visibility)
             widget.styleChanged.connect(self.change_curve_style)
@@ -980,7 +1033,7 @@ class PlottingMixin:
             self.plotted_list.addItem(item)
             self.plotted_list.setItemWidget(item, widget)
         else:
-            item.setText(origin_label)
+            item.setText(display_label)
             self.plotted_list.addItem(item)
 
         self.data_tabs.setCurrentIndex(2)
@@ -1539,72 +1592,105 @@ class PlottingMixin:
             self._annot_drag_active = False
             self._annot_drag_offset = None
 
-    def _on_annotation_motion(self, event):
-        """Update annotation position while dragging."""
-        if not getattr(self, "_annot_drag_active", False):
-            # Hover tooltip: show "Right click to edit" when cursor is inside the annotation box
-            try:
-                ax = getattr(self, "plotted_ax", None)
-                ann = getattr(self, "plotted_annotation", None)
 
-                inside_ann = False
-                inside_leg = False
-                if ax is not None and event is not None and event.inaxes is ax:
-                    if ann is not None:
-                        try:
-                            inside_ann = bool(ann.contains(event)[0])
-                        except Exception:
-                            inside_ann = False
+    def _on_plotted_hover_hint(self, event):
+        """Show a tooltip when hovering over editable items in the Plotted Data axes.
 
-                    # Legend hover (same hint)
-                    try:
-                        leg = ax.get_legend()
-                    except Exception:
-                        leg = None
-                    if leg is not None:
-                        try:
-                            inside_leg = bool(leg.contains(event)[0])
-                        except Exception:
-                            inside_leg = False
-
-                # Prefer annotation hover when both are true
-                if inside_ann:
-                    inside_leg = False
-
-                annot_tip_active = getattr(self, "_annot_tooltip_active", False)
-                legend_tip_active = getattr(self, "_legend_tooltip_active", False)
-
-                # Determine whether to show the tooltip
-                show = inside_ann or inside_leg
-
-                if show and not (annot_tip_active or legend_tip_active):
-                    pos = None
-                    ge = getattr(event, "guiEvent", None)
-                    if ge is not None:
-                        try:
-                            pos = ge.globalPos()
-                        except Exception:
-                            pos = None
-                    if pos is None:
-                        pos = QCursor.pos()
-                    owner = getattr(self, "plotted_canvas", None) or self
-                    QToolTip.showText(pos, "Right click to edit", owner)
-                    self._annot_tooltip_active = bool(inside_ann)
-                    self._legend_tooltip_active = bool(inside_leg)
-
-                elif (not show) and (annot_tip_active or legend_tip_active):
+        Tooltip text is context-aware:
+        - Annotation: right-click edits the annotation text/style
+        - Legend:
+            * User-defined legend mode: left-click renames curves, right-click edits legend style
+            * Entry number legend mode: right-click edits legend style
+        """
+        try:
+            ax = getattr(self, "plotted_ax", None)
+            if ax is None or event is None or event.inaxes is not ax:
+                # Hide when leaving the axes
+                if getattr(self, "_annot_tooltip_active", False) or getattr(self, "_legend_tooltip_active", False):
                     QToolTip.hideText()
                     self._annot_tooltip_active = False
                     self._legend_tooltip_active = False
+                    self._hover_tip_text = ""
+                return
 
-                else:
-                    # If we are switching target (annotation <-> legend), just flip the flags
-                    if show:
-                        self._annot_tooltip_active = bool(inside_ann)
-                        self._legend_tooltip_active = bool(inside_leg)
+            # Determine hover target
+            ann = getattr(self, "plotted_annotation", None)
+            inside_ann = False
+            if ann is not None:
+                try:
+                    inside_ann = bool(ann.contains(event)[0])
+                except Exception:
+                    inside_ann = False
 
+            try:
+                leg = ax.get_legend()
             except Exception:
-                pass
+                leg = None
+            inside_leg = False
+            if leg is not None:
+                try:
+                    inside_leg = bool(leg.contains(event)[0])
+                except Exception:
+                    inside_leg = False
+
+            # Prefer annotation hover when both are true
+            if inside_ann:
+                inside_leg = False
+
+            target = "ann" if inside_ann else ("leg" if inside_leg else None)
+
+            # Determine tooltip text
+            desired_text = ""
+            if target == "ann":
+                desired_text = "Right click to edit"
+            elif target == "leg":
+                mode = ""
+                try:
+                    mode = self._get_plotted_legend_mode()
+                except Exception:
+                    mode = ""
+                if str(mode).strip().lower().startswith("user"):
+                    desired_text = "Left click to rename (user-defined)  •  Right click to edit legend style"
+                else:
+                    desired_text = "Right click to edit legend style"
+
+            annot_tip_active = getattr(self, "_annot_tooltip_active", False)
+            legend_tip_active = getattr(self, "_legend_tooltip_active", False)
+            tip_text_active = str(getattr(self, "_hover_tip_text", "") or "")
+
+            if target is None:
+                if annot_tip_active or legend_tip_active:
+                    QToolTip.hideText()
+                    self._annot_tooltip_active = False
+                    self._legend_tooltip_active = False
+                    self._hover_tip_text = ""
+                return
+
+            # Show or update tooltip if needed (new target or changed text)
+            need_update = (not (annot_tip_active or legend_tip_active)) or (desired_text and desired_text != tip_text_active)                 or (self._annot_tooltip_active != (target == "ann")) or (self._legend_tooltip_active != (target == "leg"))
+
+            if need_update:
+                ge = getattr(event, "guiEvent", None)
+                pos = None
+                if ge is not None:
+                    try:
+                        pos = ge.globalPos()
+                    except Exception:
+                        pos = None
+                if pos is None:
+                    pos = QCursor.pos()
+                owner = getattr(self, "canvas_plotted", None) or self
+                QToolTip.showText(pos, desired_text, owner)
+                self._hover_tip_text = desired_text
+                self._annot_tooltip_active = (target == "ann")
+                self._legend_tooltip_active = (target == "leg")
+        except Exception:
+            pass
+
+    def _on_annotation_motion(self, event):
+        """Update annotation position while dragging."""
+        if not getattr(self, "_annot_drag_active", False):
+            return
             return
         ax = getattr(self, "plotted_ax", None)
         ann = getattr(self, "plotted_annotation", None)
@@ -1639,7 +1725,29 @@ class PlottingMixin:
         self.plotted_curves.clear()
         self.plotted_lines.clear()
         self.plotted_list.clear()
-        self.custom_labels.clear()
+        # Do NOT blindly clear custom labels here: summed curves rely on their
+        # user-given names being preserved across clearing/re-adding in the
+        # Plotted Data tab. Keep labels for synthetic "__SUM__" curves and
+        # clear everything else.
+        try:
+            def _is_sum_key(k: str) -> bool:
+                try:
+                    parts = str(k).split("##", 1)
+                    if len(parts) != 2:
+                        return False
+                    _abs, h5 = parts
+                    return str(h5).lstrip("/").startswith("__SUM__/")
+                except Exception:
+                    return False
+            if hasattr(self, "custom_labels") and isinstance(self.custom_labels, dict):
+                self.custom_labels = {k: v for k, v in self.custom_labels.items() if _is_sum_key(k)}
+            else:
+                self.custom_labels = {}
+        except Exception:
+            try:
+                self.custom_labels = {}
+            except Exception:
+                pass
         self.original_line_data.clear()  # Waterfall originals
 
         # Reset Waterfall controls
@@ -1923,6 +2031,41 @@ class PlottingMixin:
         If no entry number can be detected, falls back to an existing label.
         """
         import re
+
+        # Synthetic summed curves ("__SUM__/...") do not have an entry number.
+        # In "Entry number" mode we want their intrinsic display names (e.g. the
+        # user-defined summation group names), not any user-defined legend rename.
+        try:
+            h5 = str(key).split("##", 1)[1] if (key and "##" in str(key)) else str(key or "")
+            if h5.lstrip("/").startswith("__SUM__/"):
+                base = getattr(self, "curve_display_names", {}).get(key)
+                if base:
+                    return str(base)
+                meta = getattr(self, "plotted_metadata", {}).get(key, {}) if hasattr(self, "plotted_metadata") else {}
+                if isinstance(meta, dict):
+                    lbl = meta.get("label") or meta.get("display_name")
+                    if lbl:
+                        return str(lbl)
+        except Exception:
+            pass
+
+        # Synthetic summed curves ("__SUM__/...") do not have an entry number.
+        # In "Entry number" mode we want their intrinsic display names (e.g. the
+        # user-defined summation group names), not any user-defined legend rename.
+        try:
+            h5 = str(key).split("##", 1)[1] if (key and "##" in str(key)) else str(key or "")
+            if h5.lstrip("/").startswith("__SUM__/"):
+                base = getattr(self, "curve_display_names", {}).get(key)
+                if base:
+                    return str(base)
+                # Fall back to plotted metadata label if present
+                meta = getattr(self, "plotted_metadata", {}).get(key, {}) if hasattr(self, "plotted_metadata") else {}
+                if isinstance(meta, dict):
+                    lbl = meta.get("label") or meta.get("display_name")
+                    if lbl:
+                        return str(lbl)
+        except Exception:
+            pass
         candidates = []
         try:
             meta = getattr(self, "plotted_metadata", {}).get(key, {}) if hasattr(self, "plotted_metadata") else {}
@@ -3004,7 +3147,18 @@ class PlottingMixin:
 
                         combined_label = f"{abs_path}##{hdf5_path}"
                         if item.checkState(0) == Qt.Checked:
-                            self.plot_data[combined_label] = ds_obj[()]
+                            y = ds_obj[()]
+                            try:
+                                y = np.asarray(y)
+                            except Exception:
+                                QMessageBox.warning(self, "Invalid dataset", f'The dataset “{hdf5_path}” could not be read as a 1D array and will be ignored.')
+                                item.setCheckState(0, Qt.Unchecked)
+                                return
+                            if y.ndim != 1 or y.size == 0:
+                                QMessageBox.warning(self, "Invalid dataset", f'The dataset “{hdf5_path}” is not a non-empty 1D array and will be ignored.')
+                                item.setCheckState(0, Qt.Unchecked)
+                                return
+                            self.plot_data[combined_label] = y
                             self.raw_visibility[combined_label] = True
                             # Track source so bulk toggles don't accidentally remove
                             # manually selected curves.
@@ -3111,25 +3265,48 @@ class PlottingMixin:
     # ------------ Raw/Processed plotting ------------
     def plot_curves(self, ax):
         ax.clear()
-        for combined_label, y_data in self.plot_data.items():
-            if not self.raw_visibility.get(combined_label, True):
+        for combined_label, y_data in list(getattr(self, "plot_data", {}).items()):
+            try:
+                if not self.raw_visibility.get(combined_label, True):
+                    continue
+
+                parts = str(combined_label).split("##", 1)
+                if len(parts) != 2:
+                    continue
+                abs_path, hdf5_path = parts
+                parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
+
+                # Robustly coerce y to a 1D array
+                y_arr = np.asarray(y_data)
+                if y_arr.ndim != 1 or y_arr.size == 0:
+                    continue
+
+                # Lookup energy axis; pass point count without calling len() on scalars
+                x_data = lookup_energy(self, abs_path, parent, int(y_arr.size))
+                x_arr = np.asarray(x_data)
+                if x_arr.ndim != 1 or x_arr.size == 0:
+                    continue
+
+                mlen = min(int(x_arr.size), int(y_arr.size))
+                if mlen <= 0:
+                    continue
+                x_use = x_arr[:mlen]
+                y_use = y_arr[:mlen]
+
+                if x_use.size == 0:
+                    continue
+
+                line, = ax.plot(
+                    x_use, y_use,
+                    label=self.shorten_label(hdf5_path),
+                    color=self._get_persistent_curve_color(combined_label)
+                )
+                line.dataset_key = combined_label
+            except Exception:
+                # Skip problematic datasets but continue plotting the rest
                 continue
-            parts = combined_label.split("##", 1)
-            if len(parts) != 2:
-                continue
-            abs_path, hdf5_path = parts
-            parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
-            x_data = lookup_energy(self, abs_path, parent, len(y_data))
-            if getattr(x_data, "size", 0) == 0 or len(y_data) == 0:
-                continue
-            mlen = min(len(x_data), len(y_data))
-            x_use = x_data[:mlen]
-            y_use = y_data[:mlen]
-            if len(x_use) == 0:
-                continue
-            line, = ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path), color=self._get_persistent_curve_color(combined_label))
-            line.dataset_key = combined_label
         ax.set_xlabel("Photon energy (eV)")
+
 
     def update_plot_raw(self):
         try:
@@ -3142,26 +3319,62 @@ class PlottingMixin:
             print("update_plot_raw error:", e)
 
     def _plot_multiple_no_bg(self):
+        import numpy as np
+
         self.proc_ax.clear()
-        for combined_label, y_data in self.plot_data.items():
+        for combined_label, y_data in (getattr(self, "plot_data", {}) or {}).items():
             if not self.raw_visibility.get(combined_label, True):
                 continue
-            parts = combined_label.split("##", 1)
+            parts = str(combined_label).split("##", 1)
             if len(parts) != 2:
                 continue
             abs_path, hdf5_path = parts
             parent = hdf5_path.rsplit("/", 1)[0] if "/" in hdf5_path else ""
-            x_data = lookup_energy(self, abs_path, parent, len(y_data))
-            if getattr(x_data, "size", 0) == 0 or len(y_data) == 0:
+
+            # Robustly coerce y to 1D numeric array
+            try:
+                y_arr = np.asarray(y_data, dtype=float).ravel()
+            except Exception:
                 continue
-            processed_y = processing.apply_normalization(self, abs_path, parent, y_data)
-            mlen = min(len(x_data), len(processed_y))
-            x_use = x_data[:mlen]
+            if y_arr.size < 2:
+                continue
+
+            # Robustly get x
+            try:
+                x_data = lookup_energy(self, abs_path, parent, int(y_arr.size))
+                x_arr = np.asarray(x_data, dtype=float).ravel()
+            except Exception:
+                continue
+            if x_arr.size < 2:
+                continue
+
+            # Apply normalization
+            try:
+                processed_y = processing.apply_normalization(self, abs_path, parent, y_arr)
+                processed_y = np.asarray(processed_y, dtype=float).ravel()
+            except Exception:
+                processed_y = y_arr
+
+            mlen = int(min(x_arr.size, processed_y.size))
+            if mlen < 2:
+                continue
+
+            x_use = x_arr[:mlen]
             y_use = processed_y[:mlen]
-            if len(x_use) == 0:
+            if x_use.size < 2:
                 continue
-            line, = self.proc_ax.plot(x_use, y_use, label=self.shorten_label(hdf5_path), color=self._get_persistent_curve_color(combined_label))
-            line.dataset_key = combined_label
+
+            try:
+                line, = self.proc_ax.plot(
+                    x_use,
+                    y_use,
+                    label=self.shorten_label(hdf5_path),
+                    color=self._get_persistent_curve_color(combined_label),
+                )
+                line.dataset_key = combined_label
+            except Exception:
+                continue
+
         self.proc_ax.set_xlabel("Photon energy (eV)")
 
     def _visible_processed_keys(self):
@@ -3170,6 +3383,31 @@ class PlottingMixin:
             return [k for k in getattr(self, "plot_data", {}) if getattr(self, "raw_visibility", {}).get(k, False)]
         except Exception:
             return []
+
+
+    def _get_drawn_processed_xy(self, key):
+        """Return (x,y) arrays for the curve *as currently drawn* on the Processed axes.
+
+        This is used to ensure "Pass to Plotted" uses exactly the same data the user sees
+        (especially in Group BG mode). Returns (None, None) if not found.
+        """
+        try:
+            import numpy as np
+            ax = getattr(self, "proc_ax", None)
+            if ax is None:
+                return None, None
+            for line in ax.get_lines():
+                if getattr(line, "dataset_key", None) == key and str(getattr(line, "get_label", lambda: "")()) != "_bg":
+                    x = np.asarray(line.get_xdata(), dtype=float).ravel()
+                    y = np.asarray(line.get_ydata(), dtype=float).ravel()
+                    if x.size == 0 or y.size == 0:
+                        return None, None
+                    mlen = int(min(x.size, y.size))
+                    return x[:mlen], y[:mlen]
+        except Exception:
+            return None, None
+        return None, None
+
 
     def _compute_group_auto_backgrounds(self, keys, deg: int, pre_edge_percent: float):
         """Compute *per-spectrum* automatic backgrounds for a group.
@@ -3203,12 +3441,28 @@ class PlottingMixin:
             y_data = self.plot_data.get(key)
             if y_data is None:
                 continue
-            x_data = lookup_energy(self, abs_path, parent, len(y_data))
-            y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
-            mlen = min(len(x_data), len(y_proc))
+            try:
+                y_arr = np.asarray(y_data, dtype=float).ravel()
+            except Exception:
+                continue
+            if y_arr.size < 2:
+                continue
+            x_data = lookup_energy(self, abs_path, parent, int(y_arr.size))
+            try:
+                x_arr = np.asarray(x_data, dtype=float).ravel()
+            except Exception:
+                continue
+            if x_arr.size < 2:
+                continue
+            y_proc = processing.apply_normalization(self, abs_path, parent, y_arr)
+            try:
+                y_proc = np.asarray(y_proc, dtype=float).ravel()
+            except Exception:
+                y_proc = np.asarray(y_arr, dtype=float).ravel()
+            mlen = int(min(x_arr.size, y_proc.size))
             if mlen < 3:
                 continue
-            x_use = np.asarray(x_data[:mlen], dtype=float).ravel()
+            x_use = np.asarray(x_arr[:mlen], dtype=float).ravel()
             y_use = np.asarray(y_proc[:mlen], dtype=float).ravel()
             bg = self._apply_automatic_bg_new(x_use, y_use, deg=int(deg), pre_edge_percent=float(pre_edge_percent), do_plot=False)
             bgs[key] = np.asarray(bg, dtype=float).ravel()[:mlen]
@@ -3529,12 +3783,28 @@ class PlottingMixin:
             y_data = self.plot_data.get(key)
             if y_data is None:
                 continue
-            x_data = lookup_energy(self, abs_path, parent, len(y_data))
-            y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
-            mlen = min(len(x_data), len(y_proc))
+            try:
+                y_arr = np.asarray(y_data, dtype=float).ravel()
+            except Exception:
+                continue
+            if y_arr.size < 2:
+                continue
+            x_data = lookup_energy(self, abs_path, parent, int(y_arr.size))
+            try:
+                x_arr = np.asarray(x_data, dtype=float).ravel()
+            except Exception:
+                continue
+            if x_arr.size < 2:
+                continue
+            y_proc = processing.apply_normalization(self, abs_path, parent, y_arr)
+            try:
+                y_proc = np.asarray(y_proc, dtype=float).ravel()
+            except Exception:
+                y_proc = np.asarray(y_arr, dtype=float).ravel()
+            mlen = int(min(x_arr.size, y_proc.size))
             if mlen < 3:
                 continue
-            x_use = np.asarray(x_data[:mlen], dtype=float).ravel()
+            x_use = np.asarray(x_arr[:mlen], dtype=float).ravel()
             y_use = np.asarray(y_proc[:mlen], dtype=float).ravel()
             bg = self._apply_automatic_bg_new(x_use, y_use, deg=deg, pre_edge_percent=pre, do_plot=False)
             bg = np.asarray(bg, dtype=float).ravel()[:mlen]
@@ -4302,7 +4572,19 @@ class PlottingMixin:
 
         if hasattr(self, "custom_labels"):
             try:
-                self.custom_labels.pop(key, None)
+                # Preserve labels for synthetic sum curves; otherwise their
+                # user-provided names would revert to the generic "sum" when
+                # re-added later.
+                parts = str(key).split("##", 1)
+                is_sum = False
+                if len(parts) == 2:
+                    try:
+                        _abs, h5 = parts
+                        is_sum = str(h5).lstrip("/").startswith("__SUM__/")
+                    except Exception:
+                        is_sum = False
+                if not is_sum:
+                    self.custom_labels.pop(key, None)
             except Exception:
                 pass
 
@@ -4499,18 +4781,29 @@ class PlottingMixin:
         self.raw_tree.blockSignals(True)
         try:
             self.raw_tree.clear()
-            groups = self.group_datasets()
+            groups = self.group_datasets(include_sums=False)
             for idx, group in enumerate(groups):
                 region_id = f"region_{idx}"
                 region_state = getattr(self, "region_states", {}).get(region_id, Qt.Checked)
-                region_item = QTreeWidgetItem([f"Region {idx+1}  ({group.get('min',0):.3f}–{group.get('max',0):.3f})"])
+                display = group.get("label")
+                if not display:
+                    display = f"({group.get('min',0):.3f}–{group.get('max',0):.3f} eV)"
+                region_item = QTreeWidgetItem([f"Region {idx+1}  {display}"])
                 region_item.setFlags(region_item.flags() | Qt.ItemIsUserCheckable)
                 region_item.setCheckState(0, region_state)
                 region_item.setData(0, Qt.UserRole+1, region_id)
                 sorted_keys = sorted(group['keys'], key=lambda x: parse_entry_number(x.split("##",1)[1] if "##" in x else ""))
                 for key in sorted_keys:
                     parts = key.split("##", 1)
-                    label = self.shorten_label(parts[1]) if len(parts) == 2 else key
+                    label = None
+                    try:
+                        cl = getattr(self, "custom_labels", {}) or {}
+                        if key in cl and cl[key]:
+                            label = str(cl[key])
+                    except Exception:
+                        label = None
+                    if not label:
+                        label = self.shorten_label(parts[1]) if len(parts) == 2 else key
                     child = QTreeWidgetItem([label])
                     child.setFlags(child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                     child_state = Qt.Checked if getattr(self, "raw_visibility", {}).get(key, True) else Qt.Unchecked
@@ -4577,17 +4870,29 @@ class PlottingMixin:
         self.proc_tree.blockSignals(True)
         try:
             self.proc_tree.clear()
-            groups = self.group_datasets()
+            groups = self.group_datasets(include_sums=True)
             for idx, group in enumerate(groups):
                 region_id = f"proc_region_{idx}"
-                region_item = QTreeWidgetItem([f"Region {idx+1}  ({group.get('min',0):.3f}–{group.get('max',0):.3f})"])
+                display = group.get("label")
+                if not display:
+                    display = f"({group.get('min',0):.3f}–{group.get('max',0):.3f} eV)"
+                region_item = QTreeWidgetItem([f"Region {idx+1}  {display}"])
                 region_item.setFlags(region_item.flags() | Qt.ItemIsUserCheckable)
                 region_item.setCheckState(0, self.proc_region_states.get(region_id, Qt.Checked))
                 region_item.setData(0, Qt.UserRole+1, region_id)
                 sorted_keys = sorted(group['keys'], key=lambda x: parse_entry_number(x.split("##",1)[1] if "##" in x else ""))
                 for key in sorted_keys:
                     parts = key.split("##", 1)
-                    label = self.shorten_label(parts[1]) if len(parts) == 2 else key
+                    # Use intrinsic curve names (e.g. synthetic summed-group names) when available.
+                    label = None
+                    try:
+                        cdn = getattr(self, "curve_display_names", {}) or {}
+                        if key in cdn and cdn[key]:
+                            label = str(cdn[key])
+                    except Exception:
+                        label = None
+                    if not label:
+                        label = self.shorten_label(parts[1]) if len(parts) == 2 else key
                     child = QTreeWidgetItem([label])
                     child.setFlags(child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                     child_state = Qt.Checked if self.raw_visibility.get(key, True) else Qt.Unchecked
