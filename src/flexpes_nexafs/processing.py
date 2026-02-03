@@ -5,9 +5,7 @@ This module contains the ProcessingMixin and a few small helper functions.
 
 from .data import lookup_energy
 
-# -----------------------------------------------------------------------------
-# Normalisation helper (module-level wrapper for backward compatibility)
-# -----------------------------------------------------------------------------
+# --- / Normalisation helper (module-level wrapper for backward compatibility)
 def apply_normalization(viewer, abs_path, parent, y_data):
     """Apply I0 normalisation for a given spectrum.
 
@@ -58,7 +56,7 @@ def _proc_safe_post_normalize(viewer, x, y, mode):
     """
     import numpy as np
 
-    # Preferred path: use the mixin method (keeps behavior consistent everywhere).
+# Preferred path: use the mixin method (keeps behavior consistent everywhere).
     try:
         fn = getattr(viewer, "_safe_post_normalize", None)
         if callable(fn):
@@ -66,7 +64,7 @@ def _proc_safe_post_normalize(viewer, x, y, mode):
     except Exception:
         pass
 
-    # Fallback: minimal robust implementation.
+# Fallback: minimal robust implementation.
     if mode is None or mode == "None":
         return y
     x = np.asarray(x)
@@ -304,7 +302,7 @@ class ProcessingMixin:
 
         self.update_plot_processed()
 
-    # ------------------------------------------------------------------
+# ---
     # Advanced curve summation (materialises summed curves)
     # ------------------------------------------------------------------
     def _extract_entry_number_for_key(self, key: str):
@@ -366,15 +364,11 @@ class ProcessingMixin:
                     name = f"entry{nums[0]}–{nums[-1]} (n={n})"
                 return name
 
-            # Fallback using display labels
+            # Fallback using stable display labels (do NOT use custom legend labels).
+            # Custom labels are for plot legends only; dialogs should show the
+            # underlying dataset/curve names so the user can always identify
+            # what is being summed.
             def disp(k):
-                try:
-                    # Use plotted custom labels when available
-                    cl = getattr(self, "custom_labels", {}) or {}
-                    if k in cl and cl[k]:
-                        return str(cl[k])
-                except Exception:
-                    pass
                 try:
                     parts = str(k).split("##", 1)
                     return str(parts[1]) if len(parts) == 2 else str(k)
@@ -401,22 +395,21 @@ class ProcessingMixin:
             QMessageBox.information(self, "Curve summation", "Select (check) at least one curve.")
             return
 
-        # Build display names
+        # Build display names.
+        # NOTE: Use only stable dataset-derived labels here (not custom legend
+        # labels). Otherwise, editing the user-defined legend would rename items
+        # in the summation dialog, which is confusing.
         curves = []
         for k in keys:
-            disp = None
             try:
-                cl = getattr(self, "custom_labels", {}) or {}
-                if k in cl and cl[k]:
-                    disp = str(cl[k])
+                parts = str(k).split("##", 1)
+                disp = (
+                    self.shorten_label(parts[1])
+                    if (len(parts) == 2 and hasattr(self, "shorten_label"))
+                    else (parts[1] if len(parts) == 2 else str(k))
+                )
             except Exception:
-                disp = None
-            if not disp:
-                try:
-                    parts = str(k).split("##", 1)
-                    disp = self.shorten_label(parts[1]) if (len(parts) == 2 and hasattr(self, "shorten_label")) else (parts[1] if len(parts) == 2 else str(k))
-                except Exception:
-                    disp = str(k)
+                disp = str(k)
             curves.append((k, disp))
 
         try:
@@ -711,7 +704,7 @@ class ProcessingMixin:
         if np.isfinite(main_y[0]):
             background[0] = main_y[0]
         self.manual_poly = coeffs
-    
+
         # Draw anchors always
         for pt in self.manual_points:
             if pt.get("artist") is not None:
@@ -720,7 +713,7 @@ class ProcessingMixin:
                 pt["artist"] = None
             marker, = self.proc_ax.plot(pt["x"], pt["y"], marker='o', linestyle='None', markersize=8, markerfacecolor='blue', markeredgecolor='blue', picker=5)
             pt["artist"] = marker
-    
+
         # Show/hide red background line
         hide_bg = getattr(self, "chk_show_without_bg", None) is not None and self.chk_show_without_bg.isChecked()
         if hide_bg:
@@ -764,7 +757,7 @@ class ProcessingMixin:
         if self.combo_post_norm.isEnabled():
             mode_norm = self.combo_post_norm.currentText()
             sub = _proc_safe_post_normalize(self, main_x, sub, mode_norm)
-        # finite-only plotting and autoscale        
+        # finite-only plotting and autoscale
         _mplot = np.isfinite(sub) & np.isfinite(main_x)
         if not np.any(_mplot):
             self.proc_ax.set_xlabel("Photon energy (eV)")
@@ -790,7 +783,7 @@ class ProcessingMixin:
         self.manual_mode = True
         self._drag_index = None
         self.manual_poly_degree = int(self.combo_poly.currentText())
-    
+
         # Seed auto_bg if not provided
         if auto_bg is None:
             try:
@@ -801,10 +794,10 @@ class ProcessingMixin:
                 pre = float(self.spin_preedge.value()) / 100.0
             except Exception:
                 pre = 0.20
-            auto_bg = self._apply_automatic_bg_new( 
+            auto_bg = self._apply_automatic_bg_new(
                 main_x, main_y, deg=deg, pre_edge_percent=pre, ax=self.proc_ax, do_plot=False
             )
-    
+
         # Initialize anchors if absent
         if not hasattr(self, "manual_points") or not self.manual_points:
             # Match the number of anchors to the selected polynomial degree.
@@ -837,15 +830,14 @@ class ProcessingMixin:
                         idxs = np.sort(np.concatenate([idxs, extra]))
 
             self.manual_points = [{"x": float(main_x[i]), "y": float(auto_bg[i]), "artist": None} for i in idxs]
-    
-        # Clear old artists
+
         for pt in self.manual_points:
             art = pt.get("artist")
             if art is not None:
                 try: art.remove()
                 except Exception: pass
             pt["artist"] = None
-    
+
         # Draw blue, pickable anchors (always visible)
         for pt in self.manual_points:
             (ln,) = self.proc_ax.plot([pt["x"]], [pt["y"]], marker="o", markersize=7,
@@ -853,14 +845,14 @@ class ProcessingMixin:
             try: ln.set_picker(5)
             except Exception: pass
             pt["artist"] = ln
-    
+
         # Draw initial manual BG = auto BG (red dashed). Visibility is handled elsewhere.
         if getattr(self, "manual_bg_line", None) is not None:
             try: self.manual_bg_line.remove()
             except Exception: pass
             self.manual_bg_line = None
         self.manual_bg_line, = self.proc_ax.plot(main_x, auto_bg, "--", color="red", label="Background")
-    
+
         # Connect events
         canvas = self.proc_ax.figure.canvas
         if not hasattr(self, "_mpl_cids"):
@@ -873,7 +865,7 @@ class ProcessingMixin:
         self._mpl_cids["press"] = canvas.mpl_connect("button_press_event", self.on_press)
         self._mpl_cids["motion"] = canvas.mpl_connect("motion_notify_event", self.on_motion)
         self._mpl_cids["release"] = canvas.mpl_connect("button_release_event", self.on_release)
-    
+
         try:
             canvas.draw_idle()
         except Exception:
@@ -1058,7 +1050,7 @@ class ProcessingMixin:
                             pad_content = 0.05 * (y_max - y_min)
                         target_low  = y_min - pad_content
                         target_high = y_max + pad_content
-        
+
                         # During drag, only EXPAND y-limits (no sudden zoom-in)
                         curr_low, curr_high = None, None
                         if hasattr(self, "_drag_ylim") and isinstance(self._drag_ylim, tuple):
@@ -1068,13 +1060,13 @@ class ProcessingMixin:
                                 curr_low, curr_high = self.proc_ax.get_ylim()
                             except Exception:
                                 pass
-        
+
                         if curr_low is not None and curr_high is not None:
                             new_low  = min(curr_low, target_low)
                             new_high = max(curr_high, target_high)
                         else:
                             new_low, new_high = target_low, target_high
-        
+
                         # Set limits; guard against identical bounds
                         if np.isfinite(new_low) and np.isfinite(new_high):
                             if new_high <= new_low:
@@ -1083,7 +1075,7 @@ class ProcessingMixin:
                                 self.proc_ax.set_ylim(new_low, new_high)
                             except Exception:
                                 pass
-            
+
             try: self.proc_ax.figure.canvas.draw_idle()
             except Exception: pass
             return
@@ -1217,7 +1209,7 @@ class ProcessingMixin:
                 pass
             # clear cached limits
             self._drag_ylim = None
-    
+
             return
 
         # Pre-edge marker drag end

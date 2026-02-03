@@ -22,9 +22,7 @@ class LibraryMixin:
       detector, post_normalization).
     """
 
-    # ------------------------------------------------------------------
-    # HDF5 helpers
-    # ------------------------------------------------------------------
+# --- / HDF5 helpers
     def _get_library_path(self) -> str:
         """
         Return the path of the reference spectra library file.
@@ -38,7 +36,7 @@ class LibraryMixin:
             root = Path(__file__).resolve().parent
             return str(root / "library.h5")
         except Exception:
-            # Conservative fallback: current working directory
+# Conservative fallback: current working directory
             return os.path.join(os.getcwd(), "library.h5")
 
     def _ensure_library_file(self) -> str:
@@ -119,9 +117,7 @@ class LibraryMixin:
         name = f"{next_index:06d}"
         return spectra_grp.create_group(name)
 
-    # ------------------------------------------------------------------
-    # "Add to library" from plotted list
-    # ------------------------------------------------------------------
+# --- / "Add to library" from plotted list
     def on_add_to_library_requested(self, storage_key: str):
         QMessageBox.warning(
             self,
@@ -139,7 +135,7 @@ class LibraryMixin:
         if not storage_key:
             return
 
-        # Reference curves that came from the library itself should not be re-added.
+# Reference curves that came from the library itself should not be re-added.
         meta_src = getattr(self, "plotted_metadata", {})
         if isinstance(meta_src, dict):
             pm = meta_src.get(storage_key) or {}
@@ -151,7 +147,7 @@ class LibraryMixin:
                 )
                 return
 
-        # Prepare automatic metadata from the plotted curve context.
+# Prepare automatic metadata from the plotted curve context.
         auto_meta = {}
         try:
             if isinstance(meta_src, dict) and storage_key in meta_src:
@@ -179,7 +175,7 @@ class LibraryMixin:
 
         meta = dlg.get_metadata()
 
-        # Collect the curve data (x, y)
+# Collect the curve data (x, y)
         x = None
         y = None
         try:
@@ -239,7 +235,7 @@ class LibraryMixin:
                         "is already present in the library.",
                     )
                     return
-                # Check for existing references with same (element, edge, compound)
+# Check for existing references with same (element, edge, compound)
                 element_label = str(meta.get("element", "") or "").strip()
                 edge_label = str(meta.get("edge", "") or "").strip()
                 compound_label = str(meta.get("compound", "") or "").strip()
@@ -323,9 +319,7 @@ class LibraryMixin:
             "Spectrum has been added to the library.",
         )
 
-    # ------------------------------------------------------------------
-    # "Load reference" button: load from library into Plotted Data
-    # ------------------------------------------------------------------
+# --- / "Load reference" button: load from library into Plotted Data
     def on_load_reference_clicked(self):
         QMessageBox.warning(
             self,
@@ -424,7 +418,7 @@ class LibraryMixin:
         if not selected:
             return
 
-        # Re-open file for reading x/y datasets
+# Re-open file for reading x/y datasets
         try:
             with h5py.File(path, "r") as f:
                 spectra = f.get("spectra")

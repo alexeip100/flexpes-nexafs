@@ -221,7 +221,6 @@ class ExportMixin:
             QMessageBox.critical(self, "Export Error", f"Failed to write CSV:\n{ex}")
 
 
-
     def import_csv_plotted(self):
         """
         Import one or more CSV files (previously exported) and plot them directly
@@ -374,7 +373,6 @@ class ExportMixin:
                     if hasattr(self, "_add_reference_curve_to_plotted"):
                         self._add_reference_curve_to_plotted(storage_key, x_use, y_use, label, meta=meta)
                     else:
-                        # Very old fallback: plot directly if helper is unavailable
                         try:
                             line, = self.plotted_ax.plot(x_use, y_use, label=str(label))
                             if not hasattr(self, "plotted_lines"):
@@ -416,7 +414,7 @@ class ExportMixin:
         if not self.plot_data:
             return
 
-        # --------------------------------------------------------------
+# ---
         # 0.  Sanity check: one curve, or summed
         # --------------------------------------------------------------
         visible_keys = [k for k in self.plot_data if self.raw_visibility.get(k, False)]
@@ -426,7 +424,7 @@ class ExportMixin:
                                 "Please sum the curves up first or select only one curve.")
             return
 
-        # --------------------------------------------------------------
+# ---
         # 1.  Build default file name
         # --------------------------------------------------------------
         any_file   = next(iter(self.hdf5_files), None)
@@ -449,7 +447,7 @@ class ExportMixin:
         if not save_path:
             return
 
-        # --------------------------------------------------------------
+# ---
         # 2.  Get arrays + post-norm mode
         # --------------------------------------------------------------
         arrays = self.prepare_arrays_for_export()
@@ -463,7 +461,7 @@ class ExportMixin:
         y_bkg_array    = arrays["y_bkgd"]
         y_final_array  = arrays["y_final"]
 
-        # --------------------------------------------------------------
+# ---
         # 3.  Column 2 / 3 headers depend on “Sum” tickbox
         # --------------------------------------------------------------
         if self.chk_sum.isChecked() and num_visible > 1:
@@ -471,7 +469,7 @@ class ExportMixin:
         else:
             col2, col3 = "Y_original", "Y_norm_to_I0"
 
-        # --------------------------------------------------------------
+# ---
         # 4.  Dynamic header for the last column
         # --------------------------------------------------------------
         if   norm_mode == "Area":
@@ -483,7 +481,7 @@ class ExportMixin:
         else:  # "None"
             col5 = "Y_norm_to_I0_without_bckg_no_norm"
 
-        # --------------------------------------------------------------
+# ---
         # 5.  Write CSV
         # --------------------------------------------------------------
         try:
@@ -502,7 +500,7 @@ class ExportMixin:
             print("Error writing CSV:", ex)
 
     def prepare_arrays_for_export(self):
-        # ------------------------------------------------------------------
+# ---
         # 0.  Guards + fetch raw & main curves
         # ------------------------------------------------------------------
         x_raw, y_raw = self._compute_raw_curve()
@@ -513,7 +511,7 @@ class ExportMixin:
         if x_norm is None or y_norm is None:
             return None
 
-        # ------------------------------------------------------------------
+# ---
         # 1.  Length alignment
         # ------------------------------------------------------------------
         m = min(len(x_raw), len(x_norm))
@@ -521,13 +519,13 @@ class ExportMixin:
         y_raw   = y_raw[:m]
         y_norm  = y_norm[:m]
 
-        # ------------------------------------------------------------------
+# ---
         # 2.  Background
         # ------------------------------------------------------------------
         y_bkg   = self._compute_background(x_out, y_norm)
         y_final = y_norm - y_bkg
 
-        # ------------------------------------------------------------------
+# ---
         # 3.  Post-normalisation = contents of the combo box
         # ------------------------------------------------------------------
         norm_mode = self.combo_post_norm.currentText() \

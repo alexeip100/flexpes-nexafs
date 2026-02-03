@@ -30,18 +30,18 @@ class GapInfo:
 
 @dataclass
 class NanReport:
-    # overlap trimming
+# overlap trimming
     trimmed: bool
     x_min: float
     x_max: float
     n_removed_left: int
     n_removed_right: int
 
-    # isolated NaNs
+# isolated NaNs
     isolated_points_total: int
     isolated_spectra_count: int
 
-    # gaps (>=2)
+# gaps (>=2)
     gap_count_total: int
     gap_spectra_labels: List[str]
     largest_gap: Optional[GapInfo]

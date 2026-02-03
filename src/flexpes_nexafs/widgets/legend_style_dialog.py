@@ -41,7 +41,7 @@ class LegendStyleDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # --- Box group ---
+# --- Box group ---
         box_group = QGroupBox("Legend box")
         box_form = QFormLayout(box_group)
 
@@ -61,7 +61,7 @@ class LegendStyleDialog(QDialog):
 
         layout.addWidget(box_group)
 
-        # --- Font group ---
+# --- Font group ---
         font_group = QGroupBox("Legend font")
         font_form = QFormLayout(font_group)
 
@@ -80,7 +80,7 @@ class LegendStyleDialog(QDialog):
         font_form.addRow("Style", self._row_widget([self.bold_cb, self.italic_cb, self.underline_cb]))
         layout.addWidget(font_group)
 
-        # Buttons
+# Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)

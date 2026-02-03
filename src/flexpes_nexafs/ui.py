@@ -5,7 +5,7 @@ os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")  # allow concurrent read
 import h5py
 import sys
 import matplotlib.pyplot as plt
-plt.ioff() 
+plt.ioff()
 
 from PyQt5.QtWidgets import (
 
@@ -14,27 +14,22 @@ from PyQt5.QtWidgets import (
     QListWidget, QMenu, QSlider, QDoubleSpinBox
 , QAbstractItemView)
 
-# ---- Compatibility shims (Phase 2b) ----
-# ----------------------------------------
+# ---- Compatibility shims (Phase 2b) ---- / ----------------------------------------
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt, QTimer, QPoint
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
-###############################################################################
-# Helper function to parse integer from something like "entry1001"
-# for sorting the Raw Data and Processed Data items in ascending order
-###############################################################################
-
 
 from .data import DataMixin
 from .processing import ProcessingMixin
 from .plotting import PlottingMixin
+from .ui_treeviews import TreeViewMixin
 from .export import ExportMixin
 from .library import LibraryMixin
 from .channel_setup import ChannelConfigManager, ChannelSetupDialog
 import re
-class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, LibraryMixin, QMainWindow):
+class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, ExportMixin, LibraryMixin, QMainWindow):
 
     def on_plotted_list_reordered(self):
         """After drag-drop: recompute Waterfall using list order, rebuild legend, redraw."""
@@ -63,7 +58,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 self.update_legend()
         except Exception:
             pass
-    
+
     def _on_tree_current_item_changed(self, current, previous=None):
         """Keep scalar/text display in sync when navigating the HDF5 tree via keyboard."""
         try:
@@ -193,7 +188,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         except Exception:
             pass
 
-    
+
     def _apply_basic_tooltips(self):
         """Assign helpful tooltips to buttons/checkboxes/comboboxes that lack one.
 
@@ -322,8 +317,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             from . import __version__ as _PKG_VERSION
             from . import __date__ as _PKG_DATE
         except Exception:
-            _PKG_VERSION = "2.3.7"
-            _PKG_DATE = "2026-01-28"
+            _PKG_VERSION = "2.3.8"
+            _PKG_DATE = "2026-01-30"
         self.VERSION_NUMBER = str(_PKG_VERSION)
         self.CREATION_DATETIME = str(_PKG_DATE)
 
@@ -365,7 +360,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.raw_tree_reset = False
         self.active_point = None
 
-        #######################################################################
+# ---
         # MAIN GUI LAYOUT
         #######################################################################
         self.central_widget = QWidget()
@@ -398,11 +393,17 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.help_button = QPushButton("Help")
         self.help_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.help_menu = QMenu(self)
-        self.usage_action = self.help_menu.addAction("Usage")
+        self.controls_action = self.help_menu.addAction("What is what?")
+        self.howto_action = self.help_menu.addAction("How to?")
+        self.whats_new_action = self.help_menu.addAction("What's new?")
         self.about_action = self.help_menu.addAction("About")
         self.help_button.setMenu(self.help_menu)
         self.open_close_layout.addWidget(self.help_button)
-        self.usage_action.triggered.connect(self.show_usage_info)
+        self.controls_action.triggered.connect(lambda: self.show_usage_info(
+            md_filename="usage_controls.md", window_title="Usage — Controls"))
+        self.howto_action.triggered.connect(lambda: self.show_usage_info(
+            md_filename="usage_workflows.md", window_title="Usage — Workflows"))
+        self.whats_new_action.triggered.connect(lambda: self.show_whats_new_info(max_versions=5))
         self.about_action.triggered.connect(self.show_about_info)
 
         self.left_panel.addLayout(self.open_close_layout)
@@ -464,7 +465,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.data_tabs.currentChanged.connect(self.on_tab_changed)
         self.right_panel.addWidget(self.data_tabs)
 
-        #######################################################################
+# ---
         # RAW DATA TAB
         #######################################################################
         self.raw_tab = QWidget()
@@ -528,7 +529,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.raw_splitter.setStretchFactor(1, 68)
         self.data_tabs.addTab(self.raw_tab, "Raw Data")
 
-        #######################################################################
+# ---
         # PROCESSED DATA TAB
         #######################################################################
         self.proc_tab = QWidget()
@@ -668,7 +669,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.proc_tab_layout.addWidget(self.proc_splitter)
         self.data_tabs.addTab(self.proc_tab, "Processed Data")
 
-        #######################################################################
+# ---
         # PLOTTED DATA TAB
         #######################################################################
         self.plot_left_widget = QWidget()
@@ -719,7 +720,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.plot_left_layout.addWidget(self.toolbar_plotted)
         self.plot_left_layout.addWidget(self.canvas_plotted, 1)
 
-        # ----------------------------------------------------------------------
+# ---
         # BOTTOM ROW (RE-ORDERED): Waterfall controls and Grid on the left; then stretch; then Export and Clear buttons
         # ----------------------------------------------------------------------
         self.plot_buttons_layout = QHBoxLayout()
@@ -797,7 +798,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.clear_plotted_data_button.clicked.connect(self.clear_plotted_data)
         self.clear_plotted_data_button.setMaximumWidth(150)
         self.plot_buttons_layout.addWidget(self.clear_plotted_data_button)
-        # ----------------------------------------------------------------------
+# ---
 
         self.plot_left_layout.addLayout(self.plot_buttons_layout)
 
@@ -823,7 +824,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
         self.plotted_splitter.setStretchFactor(1, 45)
         self.data_tabs.addTab(self.plotted_splitter, "Plotted Data")
 
-        #######################################################################
+# ---
         # SIGNAL CONNECTIONS
         #######################################################################
         self.canvas_plotted.mpl_connect('pick_event', self.on_legend_pick)
@@ -907,7 +908,6 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 continue
 
 
-
     def _refresh_all_in_channel_combo(self):
         """
         Populate the 'All in channel' combobox with unique channel names (last path component)
@@ -918,7 +918,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             combo = getattr(self, "combo_all_channel", None)
             if combo is None:
                 return
-    
+
             # --- gather all 1D dataset relpaths from currently opened files ---
             rels = set()
             files = list(getattr(self, "hdf5_files", {}).keys()) if hasattr(self, "hdf5_files") else []
@@ -938,7 +938,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 except Exception:
                     # ignore unreadable files; continue with others
                     pass
-    
+
             # --- turn relpaths into unique channel names (last path component) ---
             channels, seen = [], set()
             for s in sorted(rels, key=lambda x: x.lower() if isinstance(x, str) else str(x)):
@@ -948,16 +948,16 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 if ch and ch not in seen:
                     seen.add(ch)
                     channels.append(ch)
-    
+
             # --- no-op if items haven't changed (prevents snap-back) ---
             current = [combo.itemText(i) for i in range(combo.count())]
             if current == channels:
                 return
-    
+
             # Preserve user's intended selection if available
             desired = getattr(self, "_desired_all_channel_selection", None)
             prev_text = combo.currentText() if combo.count() else None
-    
+
             combo.blockSignals(True)
             combo.clear()
             if channels:
@@ -968,7 +968,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 elif isinstance(prev_text, str) and prev_text in channels:
                     combo.setCurrentText(prev_text)
             combo.blockSignals(False)
-    
+
         except Exception:
             # Best-effort cleanup
             try:
@@ -977,8 +977,6 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                 pass
 
 
-
-    
     def _on_all_channel_selection_changed(self, *_):
         """Record user's desired channel selection; if checkbox is checked, apply it.
         Does NOT toggle anything when the checkbox is unchecked."""
@@ -986,12 +984,12 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             sel = (self.combo_all_channel.currentText() or "").strip()
             self._desired_all_channel_selection = sel
             if hasattr(self, "cb_all_in_channel") and self.cb_all_in_channel.isChecked():
-                # Defer actual apply slightly to let UI settle and avoid re-entrancy
+# Defer actual apply slightly to let UI settle and avoid re-entrancy
                 from PyQt5.QtCore import QTimer
                 QTimer.singleShot(0, lambda: self._apply_all_in_channel_filter())
         except Exception:
             pass
-        
+
     def _apply_all_in_channel_filter(self, *args):
             """Apply or clear the group of curves for the selected channel across all entries.
             - If checkbox is CHECKED: only the selected channel is loaded; switching clears previous channel.
@@ -1000,20 +998,20 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
             try:
                 if not hasattr(self, "combo_all_channel") or not hasattr(self, "cb_all_in_channel"):
                     return
-    
+
                 selected = (self.combo_all_channel.currentText() or "").strip()
                 checked = bool(self.cb_all_in_channel.isChecked())
                 self._desired_all_channel_selection = selected  # remember user's intent
-    
+
                 prev_active = getattr(self, "_last_all_channel_filter", None)
-    
-                # Guard against re-entrant refreshes
+
+# Guard against re-entrant refreshes
                 if getattr(self, "_in_all_channel_apply", False):
                     return
                 self._in_all_channel_apply = True
-    
+
                 if checked:
-                    # Load only the selected channel; clear previous active (for this feature only) if different
+# Load only the selected channel; clear previous active (for this feature only) if different
                     if prev_active and prev_active != selected:
                         try:
                             self.set_group_visibility(prev_active, False, source=f"all_in_channel:{prev_active}")
@@ -1023,7 +1021,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                         self.set_group_visibility(selected, True, source=f"all_in_channel:{selected}")
                         self._last_all_channel_filter = selected
                 else:
-                    # Unchecked: clear selected (and previously active) for this feature only.
+# Unchecked: clear selected (and previously active) for this feature only.
                     if selected:
                         try:
                             self.set_group_visibility(selected, False, source=f"all_in_channel:{selected}")
@@ -1036,9 +1034,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                             pass
                     self._last_all_channel_filter = None
 
-                    # If we just cleared a channel that corresponds to a role (TEY/PEY/TFY/PFY),
-                    # also uncheck the corresponding "All <role> data" checkbox so the UI state
-                    # reflects what is plotted.
+# If we just cleared a channel that corresponds to a role (TEY/PEY/TFY/PFY), / also uncheck the corresponding "All <role> data" checkbox so the UI state
                     try:
                         cleared = [c for c in [selected, prev_active] if isinstance(c, str) and c]
                         for role, cb in [
@@ -1061,11 +1057,11 @@ class HDF5Viewer(DataMixin, ProcessingMixin, PlottingMixin, ExportMixin, Library
                                     break
                     except Exception:
                         pass
-    
+
             except Exception:
                 pass
             finally:
-                # Allow pending timers to refresh safely now that we're done applying
+# Allow pending timers to refresh safely now that we're done applying
                 self._in_all_channel_apply = False
     def _on_tree_context_menu(self, pos):
         """Context menu handler for closing an individual HDF5 file from the main tree."""

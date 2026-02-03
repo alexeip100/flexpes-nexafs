@@ -1,61 +1,60 @@
-# FlexPES NEXAFS Plotter
-
-
 ## Overview
-This application opens HDF5 files with NEXAFS spectra from the FlexPES
-beamline (MAX IV Laboratory). It supports pre-processing, visualization,
-and export of raw and processed data.
+This app helps you **inspect, process, and export NEXAFS spectra** stored in HDF5 files (FlexPES / MAX IV style data).
+
+**Typical workflow (most users):**
+1. **Open HDF5** file(s).
+2. In **Raw Data**, quickly select curves (e.g. *all TEY* for an edge).
+3. In **Processed Data**, apply **I₀ normalization** and **background subtraction** (and optionally **sum** curves).
+4. **Pass to Plotted** for figure-like viewing, styling, reference spectra, and export.
 
 ## File Controls (Top Left Panel)
-- **Open HDF5:** Load one or more HDF5 files containing NEXAFS data.
-- **Close all:** Close all currently opened files (files are removed from the tree and plots).
-- **Clear all:** Remove all loaded data and reset the interface (raw/processed/plotted).
-- **Help:** Open the **Usage** and **About** dialogs.
-- **Setup channels / Active beamline:** Configure how the app interprets detector channels and axes in the HDF5 file
-  (TEY/PEY/TFY/PFY, **I₀**, and **photon energy**).
-  - Click **Setup channels** → **OK** to open the setup dialog.
-  - Select an existing beamline profile and click **Use selected** to make it active (no saving needed).
-  - Edit mappings and click **Save changes** to store them.
-    You will be asked for confirmation before overwriting an existing profile such as **FlexPES-A**.
-  - **I₀** and **Energy** accept a comma-separated list of candidate dataset names/paths; the **first** candidate is treated
-    as the preferred default (fallback candidates are tried if the first one is not found).
-  - Click **Show config file location** to see where the JSON mapping file is stored on disk.
+Use these buttons when you want to **load data, reset the session, or adjust how channels are interpreted**.
 
+- **Open HDF5:** Load one or more HDF5 files containing NEXAFS data.
+- **Close all:** Remove all currently opened files (tree + plots).
+- **Clear all:** Reset the interface (Raw/Processed/Plotted). Useful if you want a clean start but keep the app open.
+- **Help:** Open the **Usage** and **About** dialogs.
+- **Setup channels / Active beamline:** Use this if curves do not show up under the expected detector family (TEY/PEY/TFY/PFY),
+  if the **energy axis** is not detected correctly, or if the default **I₀** channel is not what you expect.
 
 ## File Tree Panel
 Shows the hierarchical structure of loaded HDF5 files.
-Expand groups to view datasets. Tick checkboxes on **1-D datasets**
-(typically under `entryXXXX/measurement/...`) to include or exclude curves
-from the plots.
 
----
+**Use this panel when you want fine-grained control**: pick specific entries, channels, or scans.
+- Expand groups to find 1‑D datasets (curves), then tick their checkboxes to show/hide them.
+- Tip: if you mainly work by detector family (TEY/PEY/TFY/PFY), the **Raw Data tab** has faster “select many” tools.
 
 ## Setup channels (beamline profiles)
-The app uses a **beamline profile** to translate canonical roles (TEY, PEY, TFY, PFY, I₀, Energy) into the dataset names
+The app uses a **beamline profile** to translate the canonical roles (TEY, PEY, TFY, PFY, I₀, Energy) into the dataset names
 that exist in your HDF5 files.
 
-- **Active beamline** (shown next to the Setup channels button) controls:
-  - the **All TEY/PEY/TFY/PFY** convenience checkboxes in the Raw Data tab (they use the configured channel substrings), and
-  - the default **I₀** choice for normalization and the **Energy** dataset lookup.
-- The profile mappings are stored in a JSON file (`channel_mappings.json`). You can keep several profiles (different beamlines),
-  switch between them, and edit them inside the app.
+**When to open this dialog**
+- The **All TEY/PEY/TFY/PFY** checkboxes select the wrong curves (or nothing).
+- The **energy axis** looks wrong (or the x‑axis falls back to an index).
+- You want to change which dataset is considered the default **I₀** monitor.
+
+**What “Active beamline” affects**
+- The Raw Data tab’s **All TEY/PEY/TFY/PFY** convenience selection (it uses the configured channel substrings), and
+- the default **I₀** choice for normalization and the **Energy** dataset lookup.
+
+**Profiles and saving**
+- Profiles live in `channel_mappings.json`. You can keep multiple profiles, switch between them, and edit them in the app.
 - In the Setup dialog:
-  - **Use selected** activates the chosen existing profile and closes the dialog.
-  - **Save changes** saves the table values into the currently shown profile name (with an overwrite warning for existing profiles).
-    To avoid accidental edits, create a new profile name and save under that name when you want a variant.
-  - **Delete** removes the selected profile (protected profiles may be blocked).
-  - **Show config file location** displays the exact JSON file path (and lets you copy/open it).
-
-**I₀ / Energy candidate lists**
-- You can enter multiple candidates separated by commas.
-- The app tries candidates in order; the **first** is treated as the preferred default.
-- Keeping a generic fallback like `x` at the end is fine if your files sometimes lack a real photon-energy dataset.
-
+  - **Use selected** activates a profile and closes the dialog (no saving needed).
+  - **Save changes** writes the table values into the currently shown profile name (with an overwrite warning).
+- **I₀** and **Energy** fields accept a comma-separated list of candidate dataset names/paths; the **first** candidate is the preferred default.
 
 ## Tabs (Right Panel):
+The right panel contains three main tabs: **Raw Data**, **Processed Data**, and **Plotted Data**. Most workflows go left → right.
 
 ## Raw Data Tab
 **Purpose:** choose which datasets (curves) are visible.
+
+**Common tasks:**
+- Show *all TEY/PEY/TFY/PFY* curves for one edge across many entries.
+- Load the *same channel* across all entries ("All in channel") to compare scans consistently.
+- Quickly toggle whole edge regions on/off using the region checkboxes in the Raw tree.
+
 
 - **Data Plot:** Shows raw spectra. Multiple curves can be shown at once.
 
@@ -85,7 +84,7 @@ that exist in your HDF5 files.
 
 - **Raw Data Tree (right of plot):**  
   A dedicated tree for raw data inspection. Datasets are grouped into
-  energy-dependent “regions” (e.g. absorption edges). Regions are determined primarily from each entry’s scan energy span; when the entry title contains the intended scan endpoints, the app uses those intended values. Interrupted/unfinished scans are collapsed under a single region label like “(E_start – unfinished)” to avoid creating many nearly-identical regions. Checkboxes on group
+  energy-dependent “regions” (e.g. absorption edges). Regions are grouped by energy range (edge). Interrupted/unfinished scans are collapsed to avoid clutter. Checkboxes on group
   nodes allow quick selection or deselection of an entire edge, while
   individual items allow fine-grained control of which curves are visible.
 
@@ -98,6 +97,13 @@ that exist in your HDF5 files.
 
 ## Processed Data Tab
 **Purpose:** apply non-destructive processing to the visible raw curves.
+
+**Common tasks:**
+- Normalize spectra by **I₀** before comparing scans.
+- Subtract a background and apply a consistent post-normalization for comparison.
+- Sum repeated scans into one curve ("Sum up").
+- Use **Group BG** when processing multiple spectra that must be treated consistently.
+
 
 ### Top Controls (normalization, summing, export)
 
@@ -113,14 +119,9 @@ that exist in your HDF5 files.
 - **Sum up?** *(button)*  
   Opens the **Curve summation** dialog, where you can combine spectra into one or more *summed curves*.
 
-  **Workflow:**
-  - All currently available curves appear under **Available curves**.
-  - **Drag-and-drop** one or several curves into a group under **Summation groups**.
-  - Group names are editable (**double‑click a group name to edit**). Group names must be unique.
-  - **+ Group** creates a new group (Group1, Group2, …). **− Group** deletes the selected group and moves its contents back to **Available curves**.
-  - Press **OK** to create the summed curves.
+  **Workflow:** drag curves into groups, rename groups if desired, then press **OK**.
 
-  **Result:**
+**Result:**
   - Each group produces a new curve with the group name (e.g. “sample1”). Single-curve groups keep the group name.
   - The summed curves appear in the **same Region** as their constituents.
   - Constituents are unchecked by default; the new summed curves are checked.
@@ -133,13 +134,7 @@ that exist in your HDF5 files.
   Becomes **checkable** as soon as **two or more** spectra are selected (it is **not** enabled by default — the user must
   actively check it).
 
-  When **Group BG** is checked, the GUI enters *group background* mode and automatically enforces the settings required
-  for consistent processing of multiple spectra:
-
-  - **Choose BG** is set to **Auto** *(and locked while Group BG stays checked)*.
-  - **Post-normalization** is set to **Area** *(and locked while Group BG stays checked)*.
-  - **Subtract BG** is checked by default, but **remains user-togglable** so you can visually inspect whether the suggested
-    background looks reasonable:
+  When **Group BG** is checked, the app switches to *group background* mode to process multiple spectra consistently (background + post-normalization settings are enforced for comparability). You can still toggle **Subtract BG** to visually inspect the suggested background:
       - **Subtract BG ON:** show background-subtracted (Area-normalized) spectra.
       - **Subtract BG OFF:** show the **unsubtracted** spectra with their **individual fitted backgrounds**.
 
@@ -224,13 +219,17 @@ that exist in your HDF5 files.
 ## Plotted Data Tab
 **Purpose:** control plot appearance, curve styles, reference spectra, and export.
 
+**Common tasks:**
+- Make a clean, readable figure (styles, legend, annotation).
+- Compare many curves using **Waterfall** and drag‑reordering.
+- Save curves to the **reference library** and export plots/data.
+
+
 ### Plot and axes
 
 - **Interactive Plot Canvas:**  
   Embedded Matplotlib canvas with zoom, pan, and save tools (via the
-  toolbar). Energy (x-axis) is auto-detected from typical energy arrays
-  such as `pcap_energy_av` or `mono_traj_energy`, with a fallback to a
-  simple index axis if none are found. Curve labels initially include
+  toolbar). Energy (x-axis) is auto-detected from typical energy arrays (with a fallback to an index axis if none are found). Curve labels initially include
   information like *entry + channel* (or “Summed Curve”).
 
 ### Waterfall controls

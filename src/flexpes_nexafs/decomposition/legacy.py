@@ -24,9 +24,7 @@ except Exception:
     HAVE_SCIPY = False
 
 
-# -----------------------------
-# Utilities / Core algorithms
-# -----------------------------
+# --- / Utilities / Core algorithms
 
 def nnls_solve(A, b):
     """Solve non-negative least squares: min_x ||Ax - b||^2, x >= 0."""
@@ -123,8 +121,7 @@ def mean_residual_vs_energy(X, Xhat):
     return (X - Xhat).mean(axis=0)
 
 
-
-# -----------------------------
+# ---
 # Anchor-processing helpers (borrowed from this tool)
 # -----------------------------
 
@@ -204,7 +201,7 @@ def transform_curve_to_grid(x_raw, y_raw, x_target, dx=0.0, factor=1.0, broadeni
     # Like np.interp usage in the curve-fitting script: clamp outside range
     return np.interp(x_target, x_s, y_s)
 
-# -----------------------------
+# ---
 # Data model
 # -----------------------------
 
@@ -347,7 +344,7 @@ class DataModel:
 
         X = np.vstack(rows)
         return e0, X
-# -----------------------------
+# ---
 # Matplotlib helpers
 # -----------------------------
 
@@ -374,8 +371,7 @@ def save_dataframe(parent, df: pd.DataFrame, default_name: str, dialog_title: st
         QMessageBox.critical(parent, "Export error", str(exc))
 
 
-
-# -----------------------------
+# ---
 # Tabs
 # -----------------------------
 
@@ -1108,7 +1104,7 @@ class NMFTab(BaseAnalysisTab):
         self.btn_export.clicked.connect(self.export_results)
         self.btn_run.clicked.connect(self.run_nmf)
 
-    
+
     def _update_seed_enabled(self):
         """Enable the Seed control only when Init is set to 'random'."""
         use = (self.cmb_init.currentText() == "random")
@@ -1332,7 +1328,6 @@ class NMFTab(BaseAnalysisTab):
             self._save_dataframe(df, "nmf_rmse.csv", "Export NMF RMSE")
 
 
-
 class MCRTab(BaseAnalysisTab):
     results_changed = pyqtSignal()
     def __init__(self, model: DataModel, pca_tab: PCATab, nmf_tab: NMFTab):
@@ -1366,7 +1361,7 @@ class MCRTab(BaseAnalysisTab):
         self.spin_tol.setToolTip(
             "Tolerance on change in global RMSE per iteration (ΔRMSE).\n"
             "If you see no effect, the algorithm may already be converging well before this limit,\n"
-            "or it may be stopping at max_iter." 
+            "or it may be stopping at max_iter."
         )
         self.ctrl.addWidget(self.spin_tol)
 
@@ -1395,7 +1390,7 @@ class MCRTab(BaseAnalysisTab):
         self.spin_lambda.setValue(0.05)
         self.spin_lambda.setToolTip(
             "Smoothing strength (lambda). Only used when 'Smooth spectra' is enabled.\n"
-            "Start with 0.05; reduce if peaks look too broadened; increase if components look noisy." 
+            "Start with 0.05; reduce if peaks look too broadened; increase if components look noisy."
         )
         self.spin_lambda.setEnabled(False)
         self.ctrl.addWidget(self.spin_lambda)
@@ -1625,8 +1620,7 @@ class MCRTab(BaseAnalysisTab):
             self._save_dataframe(df, "mcr_rmse.csv", "Export MCR-ALS RMSE")
 
 
-
-# -----------------------------
+# ---
 # Anchors tabs (Calibrate / Apply)
 # -----------------------------
 
@@ -2080,7 +2074,6 @@ class AnchorsCalibrateTab(QWidget):
             return None
 
 
-
     def _comp_color(self, comp_index):
         from matplotlib import cm
         cmap = cm.get_cmap("tab10")
@@ -2516,7 +2509,6 @@ class AnchorsCalibrateTab(QWidget):
         return self.anchors.good_energy, self.anchors.good_spectra, labels_used
 
 
-
     def export_results(self):
         """Export calibration outputs to CSV."""
         if self.anchors.good_energy is None or self.anchors.good_spectra is None:
@@ -2924,7 +2916,7 @@ class AnchorsApplyTab(QWidget):
         self.canvas_err.draw()
 
 
-# -----------------------------
+# ---
 # Main window
 # -----------------------------
 

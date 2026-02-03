@@ -171,7 +171,7 @@ class DataMixin:
         Open HDF5 file for reading with SWMR and retry a few times if busy.
         This helps tolerate concurrent writes by another process.
         """
-          
+
         last_error = None
         for i in range(max(1, int(retries))):
             try:
@@ -190,7 +190,7 @@ class DataMixin:
             except Exception as e:
                 last_error = e
                 time.sleep(0.05 * (i + 1))
-    
+
         # Final fallback: try without SWMR, even if locked=False only
         try:
             logger.debug("trying locking=False, last_error=%s", last_error)
@@ -542,15 +542,15 @@ class DataMixin:
         """
         Show or hide all 1D datasets across all opened HDF5 files whose HDF5
         relative path contains `filter_str` (typically the channel name).
-    
+
         On visible=True:
             - Read each matching 1D dataset once
             - Store into self.plot_data[abs_path##relpath]
             - Mark self.raw_visibility[...] = True
-    
+
         On visible=False:
             - Remove matching keys from self.plot_data and self.raw_visibility
-    
+
         Notes:
             - Does NOT touch the 'All in channel' combobox or its checkbox.
             - Uses a re-entrancy guard to avoid being called recursively.
@@ -564,17 +564,17 @@ class DataMixin:
         if getattr(self, "_in_set_group_visibility", False):
             return
         self._in_set_group_visibility = True
-    
+
         try:
             files = list(getattr(self, "hdf5_files", {}).keys())
             if not files:
                 # Nothing to do
                 return
-    
+
             for abs_path in files:
                 try:
                     with self._open_h5_read(abs_path) as f:
-    
+
                         def _visit(name, obj):
                             try:
                                 import h5py
@@ -592,7 +592,7 @@ class DataMixin:
                                 # Require channel substring match in relpath
                                 if filter_str and filter_str not in name:
                                     return
-    
+
                                 key = f"{abs_path}##{name}"
                                 if visible:
                                     # Read y-array; x-array handling is elsewhere (e.g., in plotting)
@@ -617,17 +617,17 @@ class DataMixin:
                                     if should_delete:
                                         self.plot_data.pop(key, None)
                                         self.raw_visibility.pop(key, None)
-    
+
                             except Exception:
                                 # Ignore per-item errors; keep scanning
                                 pass
-    
+
                         f.visititems(_visit)
-    
+
                 except Exception:
                     # Ignore per-file errors; continue with remaining files
                     continue
-    
+
             # Single refresh at the end for performance and UI stability
             try:
                 self.update_plot_raw()
@@ -637,7 +637,7 @@ class DataMixin:
                     self.update_pass_button_state()
                 except Exception:
                     pass
-    
+
         finally:
             self._in_set_group_visibility = False
 
@@ -909,11 +909,11 @@ class DataMixin:
             pass
 
         dialog.setWindowFlags(dialog.windowFlags() | Qt.Window | Qt.WindowMinMaxButtonsHint)
-    
+
         screen_geom = QApplication.primaryScreen().availableGeometry()
         dialog.resize(int(screen_geom.width()*0.60), int(screen_geom.height()*0.60))
         dialog.move(screen_geom.center() - dialog.rect().center())
-    
+
         if dialog.exec_() == QDialog.Accepted:
             file_paths = dialog.selectedFiles()
             if file_paths:
@@ -933,32 +933,32 @@ class DataMixin:
             # Mark file as known without keeping it open
             abs_path = os.path.abspath(abs_path)
             self.hdf5_files[abs_path] = True
-    
+
             abs_path = os.path.abspath(abs_path)
             file_item = QTreeWidgetItem([os.path.basename(abs_path)])
             file_item.setData(0, Qt.UserRole, (abs_path, ""))
-    
+
             has_children = False
             try:
                 with (self._open_h5_read(abs_path)) as f:
                     has_children = len(f.keys()) > 0
             except Exception:
                 has_children = False
-    
+
             if has_children:
                 file_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
                 file_item.addChild(QTreeWidgetItem(["(click to expand)"]))
-    
+
             self.tree.addTopLevelItem(file_item)
             file_item.setExpanded(True)
-    
+
             # Ensure this scans internally with short-lived opens too
             self.populate_norm_channels(abs_path)
             # Refresh 'All in channel' combo after loading this file
             QTimer.singleShot(0, getattr(self, '_refresh_all_in_channel_combo', lambda: None))
             # Update 'All in channel' combo now that files are loaded
             QTimer.singleShot(0, getattr(self, '_refresh_all_in_channel_combo', lambda: None))
-    
+
         except Exception as e:
             self.file_label.setText(f"Error opening file: {e}")
 
@@ -1029,7 +1029,7 @@ class DataMixin:
                                 child_item.setCheckState(0, Qt.Unchecked)
                             item.addChild(child_item)
                     return
-    
+
                 if hdf5_path in f:
                     obj = f[hdf5_path]
                     if isinstance(obj, h5py.Group):

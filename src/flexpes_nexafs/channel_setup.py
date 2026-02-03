@@ -20,8 +20,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
-# The main application currently uses PyQt5 throughout. Prefer PyQt5 even if
-# PyQt6 is also installed to avoid mixed-binding crashes.
+# The main application currently uses PyQt5 throughout. Prefer PyQt5 even if / PyQt6 is also installed to avoid mixed-binding crashes.
 try:
     from PyQt5 import QtWidgets, QtCore, QtGui  # type: ignore
     _QT6 = False
@@ -47,7 +46,6 @@ def _user_json_path() -> str:
         base = os.path.join(os.path.expanduser("~"), ".flexpes_nexafs")
     os.makedirs(base, exist_ok=True)
     return os.path.join(base, "channel_mappings.json")
-
 
 
 def _is_writable_path(path: str) -> bool:
@@ -380,7 +378,6 @@ class ChannelSetupDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "Open file", f"Could not open file automatically.\nPath:\n{path}")
 
 
-
     def _on_profile_selected(self, name: str) -> None:
         """Switch to an existing profile selected from the drop-down.
 
@@ -691,7 +688,7 @@ class ChannelSetupDialog(QtWidgets.QDialog):
         self._dirty = False
 
         self.accept()
-    
+
     def _on_use_selected(self) -> None:
         """Apply the selected *existing* profile and close the dialog.
 
@@ -747,7 +744,7 @@ class ChannelSetupDialog(QtWidgets.QDialog):
             pass
 
         self.accept()
-    
+
     def _on_delete(self) -> None:
         """Delete the currently selected profile (with confirmation)."""
         name = ""

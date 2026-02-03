@@ -1,7 +1,4 @@
-# -*- coding: utf-8 -*-
-# --------------------------------------------------------------------
-# CurveListItemWidget — individual curve control widget for plot list
-# --------------------------------------------------------------------
+# -*- coding: utf-8 -*- / ---
 
 from PyQt5.QtWidgets import (
     QWidget, QPushButton, QCheckBox, QComboBox, QSpinBox,
@@ -81,7 +78,7 @@ class CurveListItemWidget(QWidget):
 
         self.setLayout(layout)
 
-    # ------------------------------------------------------------------
+# ---
     # Helpers
     # ------------------------------------------------------------------
     def _set_button_color(self, color):
@@ -112,7 +109,7 @@ class CurveListItemWidget(QWidget):
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
+# ---
     # Slots
     # ------------------------------------------------------------------
     def on_color_clicked(self):

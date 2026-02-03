@@ -35,7 +35,7 @@ class AddToLibraryDialog(QDialog):
 
         self._metadata = dict(metadata or {})
 
-        # --- Editable fields ---
+# --- Editable fields ---
         self.element_combo = QComboBox()
         elements = [
             'H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
@@ -80,19 +80,17 @@ class AddToLibraryDialog(QDialog):
         self.resolution_edit = QLineEdit(str(self._metadata.get("resolution_meV", "")))
         self.comment_edit = QTextEdit(self._metadata.get("comment", ""))
 
-        # --- Read-only / auto metadata ---
+# --- Read-only / auto metadata ---
         raw_detector = str(self._metadata.get("detector", "") or "")
         source_entry = str(self._metadata.get("source_entry", "") or "")
 
-        # Compose a more informative detector string: "<mode> (<channel>)"
-        # where <mode> is typically TEY / PEY / TFY / PFY and <channel>
-        # comes from the HDF5 path (last component).
+# Compose a more informative detector string: "<mode> (<channel>)" / where <mode> is typically TEY / PEY / TFY / PFY and <channel>
         path = (source_entry or "").strip("/")
         tokens = path.split("/") if path else []
         last = tokens[-1] if tokens else raw_detector.strip()
         low = (last or "").lower()
         mode = ""
-        # Reuse the same heuristics as shorten_label in PlottingMixin:
+# Reuse the same heuristics as shorten_label in PlottingMixin:
         if "ch1" in low:
             mode = "TEY"
         elif "ch3" in low:
@@ -112,7 +110,6 @@ class AddToLibraryDialog(QDialog):
             display_detector = raw_detector.strip()
         elif channel:
             display_detector = channel
-
 
 
         self.detector_edit = QLineEdit(display_detector)
@@ -164,7 +161,7 @@ class AddToLibraryDialog(QDialog):
             )
             return
 
-        # Validate resolution as a number
+# Validate resolution as a number
         res_text = self.resolution_edit.text().strip()
         try:
             float(res_text)

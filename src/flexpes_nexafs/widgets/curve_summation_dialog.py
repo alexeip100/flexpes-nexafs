@@ -376,8 +376,6 @@ class CurveSummationDialog(QDialog):
         group_item.addChild(c)
 
 
-    
-
     def _on_accept(self):
         """Validate and accept.
 

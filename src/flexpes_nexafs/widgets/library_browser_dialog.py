@@ -39,7 +39,7 @@ class LibraryBrowserDialog(QDialog):
         self.list_widget.setSelectionMode(QListWidget.ExtendedSelection)
         layout.addWidget(self.list_widget)
 
-        # Populate list
+# Populate list
         for entry in self.entries:
             label = entry.get("label", "") or ""
             meta = entry.get("meta") or {}
@@ -50,13 +50,13 @@ class LibraryBrowserDialog(QDialog):
             display = label
             if element or edge or compound:
                 parts = [p for p in [element, edge, compound] if p]
-                # keep display as label, but show metadata in tooltip
+# keep display as label, but show metadata in tooltip
                 tip = " / ".join(parts)
                 if tip:
                     display = f"{label}"
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, entry)
-            # Tooltip helps identify entries
+# Tooltip helps identify entries
             tooltip_lines = [f"Group: {entry.get('group_name','')}".strip()]
             if element or edge or compound:
                 tooltip_lines.append(f"{element} {edge} {compound}".strip())
@@ -66,7 +66,7 @@ class LibraryBrowserDialog(QDialog):
             item.setToolTip("\n".join([l for l in tooltip_lines if l]))
             self.list_widget.addItem(item)
 
-        # Buttons
+# Buttons
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.btn_delete = QPushButton("Delete reference")
         self.button_box.addButton(self.btn_delete, QDialogButtonBox.ActionRole)
@@ -80,7 +80,7 @@ class LibraryBrowserDialog(QDialog):
     def _on_accept(self):
         selected = self.list_widget.selectedItems()
         if not selected:
-            # Allow OK with nothing selected, but treat as cancel.
+# Allow OK with nothing selected, but treat as cancel.
             self.reject()
             return
         self.accept()

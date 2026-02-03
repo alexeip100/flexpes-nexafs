@@ -10,9 +10,9 @@
 - Major internal refactor: the former large `plotting.py` was reorganized into a `plotting/` package of smaller mixin modules for maintainability.
 
 ### Added
-- Help: split **Usage** into three menu entries — **What is what?** (Controls), **How to?** (Workflows), and **What's new?" (log of latest changes) — all opening the same viewer window but loading different markdown content.
+- Help: split **Usage** into two menu entries — **What is what?** (Controls) and **How to?** (Workflows) — both opening the same viewer window but loading different markdown content.
 - Usage viewer: search with **Next/Prev** navigation and **Ctrl+F** support; TOC generated from **H3** headings for quick jumping.
-- Help content: key topics are expanded and clarified.
+- Help content: expanded and clarified key topics.
 
 
 ## [2.3.7] – 2026-01-29
