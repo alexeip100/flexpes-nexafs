@@ -1,7 +1,20 @@
+---
+
 # Changelog in the flexpes_nexafs package
 
 
 ---
+
+## [2.3.9] – 2026-03-23
+
+### Added
+- Processed Data: summed groups (created via **Sum up?**) now support a right-click context menu in the Processed tree:
+  - **Group info** shows which curves constitute the group,
+  - **Rename** updates the group name (and updates the label in Plotted Data if the curve is present there),
+  - **Delete** removes the summed group after an OK/Cancel warning (does not delete it from Plotted Data).
+
+### Changed
+- Updated the startup DPI handling so that the GUI keeps the same appearance as on 1920×1080 screens also on higher-resolution displays, avoiding automatic enlargement of fonts and widgets.
 
 
 ## [2.3.8] – 2026-02-02
@@ -10,9 +23,9 @@
 - Major internal refactor: the former large `plotting.py` was reorganized into a `plotting/` package of smaller mixin modules for maintainability.
 
 ### Added
-- Help: split **Usage** into two menu entries — **What is what?** (Controls) and **How to?** (Workflows) — both opening the same viewer window but loading different markdown content.
+- Help: split **Usage** into three menu entries — **What is what?** (Controls), **How to?** (Workflows), and **What's new?" (log of latest changes) — all opening the same viewer window but loading different markdown content.
 - Usage viewer: search with **Next/Prev** navigation and **Ctrl+F** support; TOC generated from **H3** headings for quick jumping.
-- Help content: expanded and clarified key topics.
+- Help content: key topics are expanded and clarified.
 
 
 ## [2.3.7] – 2026-01-29

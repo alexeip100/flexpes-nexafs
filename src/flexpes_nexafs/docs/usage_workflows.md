@@ -115,6 +115,8 @@ If you don’t get a summed curve, it usually means the curves don’t overlap i
 
 **Controls used (What is what?):** *Sum up?*, *Normalize by I₀?*, *Export*
 
+After summation, you can manage the new group directly in the **Processed Data** tree: right-click the group name for **Group info**, **Rename**, or **Delete**.
+
 ---
 
 # Compare multiple curves consistently (Group BG)

@@ -658,6 +658,12 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         except Exception: pass
         self.proc_tree.setHeaderHidden(True)
         (self.proc_tree.itemChanged.connect( self.proc_tree_item_changed )) if hasattr(self, 'proc_tree_item_changed') else None
+        # Context menu for summed groups in Processed Data tree
+        try:
+            self.proc_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.proc_tree.customContextMenuRequested.connect(self.on_proc_tree_context_menu)
+        except Exception:
+            pass
 
         self.proc_splitter = QSplitter(Qt.Horizontal)
         self.proc_splitter.addWidget(self.proc_left_widget)

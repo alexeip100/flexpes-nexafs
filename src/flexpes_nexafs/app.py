@@ -25,6 +25,24 @@ except Exception as exc:  # pragma: no cover
 
 def main():
     import sys
+    import os
+
+    # Keep the GUI at the same baseline scale on HiDPI / 4K screens as on
+    # the reference 1920x1080 setup. These settings must be applied before the
+    # QApplication is created.
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
+    os.environ.setdefault("QT_SCALE_FACTOR", "1")
+
+    try:
+        QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, False)
+    except Exception:
+        pass
+
+    try:
+        QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_Use96Dpi, True)
+    except Exception:
+        pass
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
 

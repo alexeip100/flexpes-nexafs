@@ -178,6 +178,15 @@ Opens the curve summation dialog to create new summed curves from selected curve
 
 **See also (How to):** *Sum curves (“Sum up?” dialog)*
 
+
+### Summed groups: right-click menu (Processed Data tree)
+When you create a summed curve using **Sum up?**, it appears as a *group curve* in the **Processed Data** tree.
+Right-click the group name to access:
+- **Group info**: shows which curves were used to build the group.
+- **Rename**: changes the group name (and updates the label in **Plotted Data** if that curve is present there).
+- **Delete**: removes the summed group after an OK/Cancel warning. (Curves already passed to **Plotted Data** are not removed automatically.)
+
+
 ### **Group BG**
 Enabled when you have two or more curves that you want to process *as a comparable group*.
 

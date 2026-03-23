@@ -334,3 +334,171 @@ class TreeViewMixin:
         finally:
             self.proc_tree.blockSignals(False)
         QTimer.singleShot(0, self.update_plot_processed)
+
+
+    # ------------------------------------------------------------------
+    # Processed Data tree: context menu for summed groups
+    # ------------------------------------------------------------------
+    def on_proc_tree_context_menu(self, pos):
+        """Right-click context menu on the Processed Data tree for summed groups."""
+        try:
+            tree = getattr(self, "proc_tree", None)
+            if tree is None:
+                return
+            item = tree.itemAt(pos)
+            if item is None:
+                return
+            key = item.data(0, Qt.UserRole)
+            if not key:
+                return
+            key = str(key)
+            sources = getattr(self, "_summed_curve_sources", {}) or {}
+            if key not in sources:
+                return
+            from PyQt5.QtWidgets import QMenu
+            menu = QMenu(tree)
+            act_info = menu.addAction("Group info")
+            act_rename = menu.addAction("Rename")
+            act_delete = menu.addAction("Delete")
+            chosen = menu.exec_(tree.viewport().mapToGlobal(pos))
+            if chosen is None:
+                return
+            if chosen == act_info:
+                self._show_summed_group_info(key)
+            elif chosen == act_rename:
+                self._rename_summed_group(key, item)
+            elif chosen == act_delete:
+                self._delete_summed_group(key)
+        except Exception:
+            return
+
+    def _show_summed_group_info(self, sum_key: str):
+        """Show a dialog listing constituent curves of a summed group."""
+        from PyQt5.QtWidgets import QMessageBox
+        sources = getattr(self, "_summed_curve_sources", {}) or {}
+        keys = list(sources.get(sum_key, []) or [])
+        if not keys:
+            QMessageBox.information(self, "Group info", "No source curves were recorded for this group.")
+            return
+        lines = []
+        for k in keys:
+            try:
+                parts = str(k).split("##", 1)
+                disp = self.shorten_label(parts[1]) if (len(parts) == 2 and hasattr(self, "shorten_label")) else str(k)
+            except Exception:
+                disp = str(k)
+            lines.append(f"- {disp}")
+        gname = ""
+        try:
+            cdn = getattr(self, "curve_display_names", {}) or {}
+            gname = str(cdn.get(sum_key) or "")
+        except Exception:
+            gname = ""
+        title = gname if gname else "Summed group"
+        QMessageBox.information(self, "Group info", f"<b>{title}</b><br><br>Constituent curves:<br>" + "<br>".join(lines))
+
+    def _rename_summed_group(self, sum_key: str, item):
+        """Rename a summed group and propagate the label to Plotted Data (if present)."""
+        from PyQt5.QtWidgets import QInputDialog
+        current = ""
+        try:
+            cdn = getattr(self, "curve_display_names", {}) or {}
+            current = str(cdn.get(sum_key) or "")
+        except Exception:
+            current = ""
+        new_name, ok = QInputDialog.getText(self, "Rename group", "New group name:", text=current)
+        if not ok:
+            return
+        new_name = str(new_name).strip()
+        if not new_name:
+            return
+        try:
+            if not hasattr(self, "curve_display_names") or self.curve_display_names is None:
+                self.curve_display_names = {}
+            self.curve_display_names[sum_key] = new_name
+        except Exception:
+            pass
+        try:
+            item.setText(0, new_name)
+        except Exception:
+            pass
+        self._update_plotted_curve_label(sum_key, new_name)
+        try:
+            self.update_legend()
+        except Exception:
+            pass
+
+    def _update_plotted_curve_label(self, key: str, new_label: str) -> None:
+        """If a curve is present in Plotted Data, update its row label widget."""
+        try:
+            lw = getattr(self, "plotted_list", None)
+            if lw is None:
+                return
+            for i in range(lw.count()):
+                it = lw.item(i)
+                w = lw.itemWidget(it)
+                if w is None:
+                    continue
+                try:
+                    if str(getattr(w, "key", "")) == str(key):
+                        if hasattr(w, "label") and w.label is not None:
+                            w.label.setText(str(new_label))
+                        else:
+                            it.setText(str(new_label))
+                except Exception:
+                    continue
+        except Exception:
+            return
+
+    def _delete_summed_group(self, sum_key: str):
+        """Delete a summed group from internal stores after confirmation.
+
+        Note: this does NOT remove it from Plotted Data automatically.
+        """
+        from PyQt5.QtWidgets import QMessageBox
+        sources = getattr(self, "_summed_curve_sources", {}) or {}
+        if sum_key not in sources:
+            return
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Delete group")
+        msg.setText("Delete this summed group from the Processed Data set?")
+        msg.setInformativeText("This cannot be undone. Curves already passed to Plotted Data will NOT be removed.")
+        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        if msg.exec_() != QMessageBox.Ok:
+            return
+        try:
+            if hasattr(self, "plot_data") and isinstance(self.plot_data, dict):
+                self.plot_data.pop(sum_key, None)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "raw_visibility") and isinstance(self.raw_visibility, dict):
+                self.raw_visibility.pop(sum_key, None)
+        except Exception:
+            pass
+        try:
+            cdn = getattr(self, "curve_display_names", None)
+            if isinstance(cdn, dict):
+                cdn.pop(sum_key, None)
+        except Exception:
+            pass
+        try:
+            sources.pop(sum_key, None)
+        except Exception:
+            pass
+        try:
+            overrides = getattr(self, "_region_overrides", None)
+            if isinstance(overrides, dict):
+                overrides.pop(sum_key, None)
+        except Exception:
+            pass
+        try:
+            self.update_plot_processed()
+        except Exception:
+            pass
+        try:
+            self.update_plot_raw()
+        except Exception:
+            pass
