@@ -25,24 +25,6 @@ except Exception as exc:  # pragma: no cover
 
 def main():
     import sys
-    import os
-
-    # Keep the GUI at the same baseline scale on HiDPI / 4K screens as on
-    # the reference 1920x1080 setup. These settings must be applied before the
-    # QApplication is created.
-    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
-    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
-    os.environ.setdefault("QT_SCALE_FACTOR", "1")
-
-    try:
-        QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, False)
-    except Exception:
-        pass
-
-    try:
-        QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_Use96Dpi, True)
-    except Exception:
-        pass
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
 
@@ -61,17 +43,28 @@ def main():
     except Exception:
         pass
 
-# Make fonts a bit larger for readability across platforms
+# Keep the 1920x1080 look as the visual baseline across screens.
+# We preserve the current "default font + 2 pt" appearance at ~96 DPI,
+# but compensate on higher-DPI / scaled displays so Qt widget text does
+# not become disproportionately large.
     try:
         f = app.font()
-        ps = int(f.pointSize())
+        screen = app.primaryScreen()
+        dpi = float(screen.logicalDotsPerInch()) if screen is not None else 96.0
+        if dpi <= 0:
+            dpi = 96.0
+        scale = dpi / 96.0
+
+        ps = float(f.pointSizeF())
         if ps > 0:
-            f.setPointSize(ps + 2)
+            baseline_pt = ps + 2.0
+            f.setPointSizeF(max(1.0, baseline_pt / scale))
         else:
 # Fallback for pixel-sized fonts
-            px = int(f.pixelSize())
+            px = float(f.pixelSize())
             if px > 0:
-                f.setPixelSize(px + 2)
+                baseline_px = px + 2.0
+                f.setPixelSize(max(1, int(round(baseline_px / scale))))
         app.setFont(f)
     except Exception:
         pass

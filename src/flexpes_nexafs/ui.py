@@ -496,7 +496,9 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         # --- Example-inspired: 'All in channel' checkbox + combo ---
         self.cb_all_in_channel = QCheckBox("All in channel:")
         self.combo_all_channel = QComboBox()
-        try: self.combo_all_channel.setMinimumWidth(220)
+        try: self.combo_all_channel.setMinimumWidth(150)
+        except Exception: pass
+        try: self.combo_all_channel.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
         except Exception: pass
         self.raw_group_layout.addWidget(self.cb_all_in_channel)
         self.raw_group_layout.addWidget(self.combo_all_channel)
@@ -520,7 +522,9 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
 
         self.raw_splitter.addWidget(self.raw_left_widget)
         self.raw_tree = QTreeWidget()
-        try: self.raw_tree.setMinimumWidth(300)
+        try: self.raw_tree.setMinimumWidth(180)
+        except Exception: pass
+        try: self.raw_tree.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         except Exception: pass
         self.raw_tree.setHeaderHidden(True)
         (self.raw_tree.itemChanged.connect( self.raw_tree_item_changed )) if hasattr(self, 'raw_tree_item_changed') else None
@@ -654,7 +658,9 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         self.proc_left_layout.addWidget(self.proc_controls_bottom, 0)
 
         self.proc_tree = QTreeWidget()
-        try: self.proc_tree.setMinimumWidth(320)
+        try: self.proc_tree.setMinimumWidth(200)
+        except Exception: pass
+        try: self.proc_tree.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         except Exception: pass
         self.proc_tree.setHeaderHidden(True)
         (self.proc_tree.itemChanged.connect( self.proc_tree_item_changed )) if hasattr(self, 'proc_tree_item_changed') else None
@@ -811,13 +817,14 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         self.plotted_splitter = QSplitter(Qt.Horizontal)
         self.plotted_splitter.addWidget(self.plot_left_widget)
         self.plotted_list = QListWidget()
-        try: self.plotted_list.setMinimumWidth(300)
+        try: self.plotted_list.setMinimumWidth(180)
+        except Exception: pass
+        try: self.plotted_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         except Exception: pass
         self.plotted_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.plotted_list.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.plotted_list.setDragEnabled(True)
         self.plotted_list.setDropIndicatorShown(True)
-        self.plotted_list.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.plotted_splitter.addWidget(self.plotted_list)
         # Enable drag & drop reordering; replot on drop
         self.plotted_list.setDragDropMode(QAbstractItemView.InternalMove)
