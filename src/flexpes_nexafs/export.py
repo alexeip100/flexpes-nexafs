@@ -43,7 +43,7 @@ class ExportMixin:
         """Export visible curves from the Plotted Data panel to CSV.
 
         Column naming rules:
-          - Legend = 'Entry number': headers are entry numbers (entry#### -> ####). All curves must have an entry id.
+          - Legend = 'Entry number': headers keep the entry prefix (entry#### -> entry####). All curves must have an entry id.
           - Legend = 'User-defined': headers are the user-defined curve names. Placeholder '<select curve name>' is not allowed.
           - Legend = 'None': export is blocked (no labeling scheme).
         """
@@ -131,7 +131,7 @@ class ExportMixin:
                 ln = self.plotted_lines[key]
                 y = np.asarray(ln.get_ydata())
                 min_len = min(min_len, len(y))
-                headers.append(entry_num)
+                headers.append(f"entry{entry_num}")
                 y_columns.append(y)
         else:
             # Require explicit user-defined names for ALL visible curves

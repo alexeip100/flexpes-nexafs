@@ -16,6 +16,7 @@ from __future__ import annotations
 try:
     from PyQt5 import QtWidgets  # type: ignore
     from PyQt5 import QtCore  # type: ignore
+    from PyQt5 import QtGui  # type: ignore
 except Exception as exc:  # pragma: no cover
 # The UI code in this package imports PyQt5 directly, so PyQt5 is required.
     raise ImportError(
@@ -44,31 +45,14 @@ def main():
         pass
 
 # Keep the 1920x1080 look as the visual baseline across screens.
-# We preserve the current "default font + 2 pt" appearance at ~96 DPI,
-# but compensate on higher-DPI / scaled displays so Qt widget text does
-# not become disproportionately large.
+# Preserve the system-selected font family, but force the known-good
+# application font size measured on the reference 1920x1080 setup.
     try:
         f = app.font()
-        screen = app.primaryScreen()
-        dpi = float(screen.logicalDotsPerInch()) if screen is not None else 96.0
-        if dpi <= 0:
-            dpi = 96.0
-        scale = dpi / 96.0
-
-        ps = float(f.pointSizeF())
-        if ps > 0:
-            baseline_pt = ps + 2.0
-            f.setPointSizeF(max(1.0, baseline_pt / scale))
-        else:
-# Fallback for pixel-sized fonts
-            px = float(f.pixelSize())
-            if px > 0:
-                baseline_px = px + 2.0
-                f.setPixelSize(max(1, int(round(baseline_px / scale))))
+        f.setPointSizeF(10.25)
         app.setFont(f)
     except Exception:
         pass
-
 
     win = MainWindow()
     win.show()

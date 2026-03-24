@@ -5,6 +5,13 @@
 
 ---
 
+## [2.4.0] – 2026-03-24
+
+### Changed
+- Updated the startup DPI handling so that the GUI keeps the same appearance as on 1920×1080 screens also on higher-resolution displays, avoiding automatic enlargement of fonts and widgets.
+- In CSV export from the Plotted Data panel, column headers in the “Entry number” naming mode are now written as entry#### instead of plain numeric values, to avoid them being misinterpreted as data by other software.
+
+
 ## [2.3.9] – 2026-03-23
 
 ### Added
@@ -12,9 +19,6 @@
   - **Group info** shows which curves constitute the group,
   - **Rename** updates the group name (and updates the label in Plotted Data if the curve is present there),
   - **Delete** removes the summed group after an OK/Cancel warning (does not delete it from Plotted Data).
-
-### Changed
-- Updated the startup DPI handling so that the GUI keeps the same appearance as on 1920×1080 screens also on higher-resolution displays, avoiding automatic enlargement of fonts and widgets.
 
 
 ## [2.3.8] – 2026-02-02
