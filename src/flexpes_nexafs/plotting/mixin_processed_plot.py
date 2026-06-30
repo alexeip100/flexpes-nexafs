@@ -13,6 +13,7 @@ import numpy as np
 
 from ..data import lookup_energy
 from .. import processing
+from .. import hdf5_loading as h5load
 
 
 class ProcessedPlotMixin:
@@ -316,16 +317,42 @@ class ProcessedPlotMixin:
         self.energy_cache[cache_key] = (x_data, False)
         return x_data
 
+    def _coerce_hdf5_relative_path(self, value, abs_path=None):
+        """Return a safe HDF5 relative path string from legacy/tree payloads."""
+        return h5load.normalize_hdf5_path(
+            value,
+            known_file_paths=getattr(self, "hdf5_files", {}) or {},
+            abs_path=abs_path,
+            strip_outer_slashes=True,
+        )
+
     def _apply_normalization(self, abs_path, parent, y_data):
         """Divide by the chosen I0 channel – open file briefly (non-locking)."""
-        if self.chk_normalize.isChecked():
-            norm_channel = self.combo_norm.currentText()
+        try:
+            normalize = bool(self.chk_normalize.isChecked())
+        except Exception:
+            normalize = False
+        if normalize:
+            parent = self._coerce_hdf5_relative_path(parent, abs_path=abs_path)
+            norm_channel = self._coerce_hdf5_relative_path(self.combo_norm.currentText(), abs_path=abs_path)
+            if not norm_channel:
+                return y_data
             norm_path = f"{parent}/{norm_channel}" if parent else norm_channel
+            norm_path = self._coerce_hdf5_relative_path(norm_path, abs_path=abs_path)
             try:
                 with self._open_h5_read(abs_path) as f:
-                    if norm_path in f:
+                    obj = f.get(norm_path, None)
+                    # If the resolved path points to a group, do not index it with
+                    # [()]. That h5py access produces the misleading tuple error
+                    # reported during refresh. Just leave the spectrum unchanged.
+                    try:
+                        import h5py as _h5py
+                        is_dataset = isinstance(obj, _h5py.Dataset)
+                    except Exception:
+                        is_dataset = hasattr(obj, "shape") and hasattr(obj, "__getitem__")
+                    if is_dataset:
                         try:
-                            norm_data = f[norm_path][()]
+                            norm_data = obj[()]
                             if getattr(norm_data, "size", 0) == 0 or getattr(y_data, "size", 0) == 0:
                                 return y_data.copy()
                             safe = np.divide(
@@ -336,9 +363,26 @@ class ProcessedPlotMixin:
                             )
                             return safe
                         except Exception as ex:
-                            print("Normalisation error:", ex)
-            except Exception:
-                pass
+                            # Avoid one console line per curve when the same problem repeats.
+                            err_key = (str(abs_path), str(norm_path), str(ex))
+                            seen = getattr(self, "_normalization_error_keys", set())
+                            if err_key not in seen:
+                                print("Normalisation error:", ex)
+                                try:
+                                    seen.add(err_key)
+                                    self._normalization_error_keys = seen
+                                except Exception:
+                                    pass
+            except Exception as ex:
+                err_key = (str(abs_path), str(norm_path), str(ex))
+                seen = getattr(self, "_normalization_error_keys", set())
+                if err_key not in seen:
+                    print("Normalisation error:", ex)
+                    try:
+                        seen.add(err_key)
+                        self._normalization_error_keys = seen
+                    except Exception:
+                        pass
         return y_data
 
     def _apply_automatic_bg_new(self, main_x, main_y, deg=None, pre_edge_percent=None, ax=None, do_plot=True):

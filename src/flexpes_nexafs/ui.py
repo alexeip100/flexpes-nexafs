@@ -1,7 +1,8 @@
 from . import processing
 from . import data
+from . import hdf5_loading as h5load
 import os
-os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")  # allow concurrent readers on Windows
+os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")  # fallback; normally set before h5py import in app/data
 import h5py
 import sys
 import matplotlib.pyplot as plt
@@ -16,7 +17,7 @@ from PyQt5.QtWidgets import (
 
 # ---- Compatibility shims (Phase 2b) ---- / ----------------------------------------
 from PyQt5.QtGui import QFont
-from PyQt5.QtCore import Qt, QTimer, QPoint
+from PyQt5.QtCore import Qt, QTimer, QPoint, QEvent
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
@@ -454,6 +455,16 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         # Enable context menu on the HDF5 tree for per-file closing
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
+        # Enable drag-and-drop loading of local .h5/.hdf5 files onto the HDF5 tree.
+        try:
+            self.tree.setAcceptDrops(True)
+            self.tree.viewport().setAcceptDrops(True)
+            self.tree.setDragDropMode(QAbstractItemView.DropOnly)
+            self.tree.setDefaultDropAction(Qt.CopyAction)
+            self.tree.installEventFilter(self)
+            self.tree.viewport().installEventFilter(self)
+        except Exception:
+            pass
         self.left_panel.addWidget(self.tree)
 
         # Right panel: tab widget
@@ -1141,6 +1152,86 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         except Exception:
             pass
 
+    def _local_paths_from_mime_data(self, mime_data):
+        """Extract local file paths from drag/drop mime data."""
+        paths = []
+        try:
+            if mime_data is None or not mime_data.hasUrls():
+                return paths
+            for url in mime_data.urls():
+                try:
+                    if url.isLocalFile():
+                        local = url.toLocalFile()
+                        if local:
+                            paths.append(local)
+                except Exception:
+                    continue
+        except Exception:
+            return []
+        return paths
+
+    def _has_supported_hdf5_drop_path(self, paths) -> bool:
+        """Return True if at least one dropped local path looks like .h5/.hdf5."""
+        try:
+            return any(h5load.is_supported_hdf5_extension(path) for path in (paths or []))
+        except Exception:
+            return False
+
+    def _handle_hdf5_tree_drag_event(self, event) -> bool:
+        """Accept drops of local HDF5 files onto the left HDF5 tree."""
+        try:
+            paths = self._local_paths_from_mime_data(event.mimeData())
+            has_local_paths = bool(paths)
+            has_hdf5_paths = self._has_supported_hdf5_drop_path(paths)
+            if event.type() in (QEvent.DragEnter, QEvent.DragMove):
+                if has_hdf5_paths:
+                    event.acceptProposedAction()
+                    try:
+                        self.statusBar().showMessage("Drop HDF5 file(s) to load", 3000)
+                    except Exception:
+                        pass
+                    return True
+                event.ignore()
+                return True
+
+            if event.type() == QEvent.Drop:
+                if has_local_paths and has_hdf5_paths:
+                    event.acceptProposedAction()
+                    try:
+                        self.statusBar().showMessage("Loading dropped HDF5 file(s)...", 3000)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, "load_hdf5_paths"):
+                            self.load_hdf5_paths(paths, source="drop")
+                    except Exception as exc:
+                        try:
+                            QMessageBox.critical(self, "HDF5 loading failed", str(exc))
+                        except Exception:
+                            pass
+                    return True
+                event.ignore()
+                return True
+        except Exception:
+            return False
+        return False
+
+    def eventFilter(self, obj, event):
+        """Route HDF5 file drag/drop events from the left tree to the shared loader."""
+        try:
+            tree = getattr(self, "tree", None)
+            if tree is not None and obj in (tree, tree.viewport()):
+                if event.type() in (QEvent.DragEnter, QEvent.DragMove, QEvent.Drop):
+                    handled = self._handle_hdf5_tree_drag_event(event)
+                    if handled:
+                        return True
+        except Exception:
+            pass
+        try:
+            return super().eventFilter(obj, event)
+        except Exception:
+            return False
+
     def keyPressEvent(self, event):
         """Handle Delete on the main HDF5 tree to close a single file."""
         handled = False
@@ -1150,9 +1241,12 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
                 if tree is not None and tree.hasFocus():
                     item = tree.currentItem()
                     if item is not None and item.parent() is None:
-                        data = item.data(0, Qt.UserRole)
-                        if isinstance(data, tuple) and len(data) == 2:
-                            abs_path, hdf5_path = data
+                        payload = h5load.split_tree_payload(
+                            item.data(0, Qt.UserRole),
+                            known_file_paths=getattr(self, "hdf5_files", {}) or {},
+                        )
+                        if payload is not None:
+                            abs_path, hdf5_path = payload
                             if abs_path and not hdf5_path:
                                 self._confirm_and_close_file(abs_path, item)
                                 handled = True

@@ -5,6 +5,17 @@
 
 ---
 
+## [2.4.1] – 2026-06-30
+
+### Added
+- HDF5 files can now be loaded by drag-and-drop onto the left **HDF5 Structure** tree. Multiple `.h5`/`.hdf5` files are supported.
+- Re-opening or dropping an already loaded file name can now refresh the file from disk, keeping existing work where possible and adding newly appended curves.
+
+### Fixed
+- Fixed repeated normalization errors that could appear after refreshing a loaded file.
+- Fixed a Group BG issue that could affect passing corrected curves to the **Plotted Data** tab.
+- Improved reliability when reading HDF5 files that are still being updated during acquisition.
+
 ## [2.4.0] – 2026-03-24
 
 ### Changed

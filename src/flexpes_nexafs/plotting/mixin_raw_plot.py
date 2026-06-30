@@ -119,11 +119,13 @@ class RawPlotMixin:
                                 continue
                             x_data = lookup_energy(self, abs_path, parent, len(y_data))
                             y_proc = processing.apply_normalization(self, abs_path, parent, y_data)
-                            mlen = min(len(x_data), len(y_proc))
+                            x_arr = np.asarray(x_data, dtype=float).ravel()
+                            y_arr = np.asarray(y_proc, dtype=float).ravel()
+                            mlen = min(int(x_arr.size), int(y_arr.size))
                             if mlen < 3:
                                 continue
-                            x_use = np.asarray(x_arr[:mlen], dtype=float).ravel()  # type: ignore[name-defined]
-                            y_use = np.asarray(y_proc[:mlen], dtype=float).ravel()
+                            x_use = x_arr[:mlen]
+                            y_use = y_arr[:mlen]
                             bg = bgs.get(key)
                             if bg is None:
                                 bg = self._apply_automatic_bg_new(x_use, y_use, deg=deg, pre_edge_percent=pre, do_plot=False)

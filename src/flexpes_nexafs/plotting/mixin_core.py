@@ -135,46 +135,6 @@ class CorePlottingMixin:
 
 # (moved to plotting: clear_plotted_data)
 
-    def _filter_empty_plot_data(self):
-        """Drop invalid 1D payloads (empty arrays, scalars) from plot_data.
-
-        Some HDF5 datasets may be empty or unexpectedly scalar-like. These can
-        break plotting (e.g. len() of unsized object). We keep only 1D arrays
-        with at least one element.
-        """
-        try:
-            cleaned = {}
-            for k, v in getattr(self, "plot_data", {}).items():
-                try:
-                    arr = np.asarray(v)
-                    if arr.ndim != 1:
-                        continue
-                    if arr.size == 0:
-                        continue
-                    cleaned[k] = arr
-                except Exception:
-                    continue
-            self.plot_data = cleaned
-        except Exception:
-            pass
-
-
-# ------------ Plotted tab helpers ------------ / (moved to plotting: pass_to_plotted_no_clear)
-
-# (moved to plotting: _add_reference_curve_to_plotted)
-
-# (moved to plotting: clear_plotted_data)
-
-
-    def on_tab_changed(self, index):
-        if index == 0:
-            self.update_plot_raw()
-            if hasattr(self, "raw_tree"):
-                self.raw_tree.update()
-        elif index == 1:
-            self.update_plot_processed()
-            if hasattr(self, "proc_tree"):
-                self.proc_tree.update()
 
     def on_tab_changed(self, index):
         if index == 0:

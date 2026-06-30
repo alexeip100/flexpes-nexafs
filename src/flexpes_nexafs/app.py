@@ -13,6 +13,9 @@ So we deliberately prefer PyQt5 here.
 
 from __future__ import annotations
 
+import os
+os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")  # must be set before any h5py import
+
 try:
     from PyQt5 import QtWidgets  # type: ignore
     from PyQt5 import QtCore  # type: ignore

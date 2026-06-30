@@ -41,6 +41,10 @@ These buttons control file loading and global reset actions.
 ### **Open HDF5**
 Opens one or more HDF5 files. Loaded files appear in the **HDF5 Structure** tree.
 
+You can also drag and drop one or more `.h5`/`.hdf5` files directly onto the **HDF5 Structure** tree. Invalid files are skipped with a warning.
+
+If a file with the same file name is already loaded, the program asks whether to refresh it from disk. Refreshing is non-destructive: existing processed/plotted work is kept where possible, and newly appended curves are added to the tree.
+
 **Tip:** you can open multiple files at once; curves from all files can be selected and plotted together.
 
 ### **Close all**

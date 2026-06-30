@@ -1,14 +1,16 @@
 
 """Auto-generated DataMixin extracted from ui.py."""
 import os
+os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")  # allow concurrent readers before h5py import
 import time
 import h5py
 import numpy as np
 import re
 import logging
+from . import hdf5_loading as h5load
 logger = logging.getLogger(__name__)
 from importlib.resources import files
-from PyQt5.QtWidgets import QApplication, QFileDialog, QTreeWidgetItem, QDialog
+from PyQt5.QtWidgets import QApplication, QFileDialog, QTreeWidgetItem, QDialog, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
 class DataMixin:
     def _ensure_raw_key_sources(self):
@@ -69,40 +71,11 @@ class DataMixin:
             yield from _walk(tree.topLevelItem(i))
 
     def _normalize_hdf5_key(self, hdf5_key):
-        """Best-effort normalization of a stored HDF5 key to str.
-
-        This mirrors PlottingMixin._normalize_hdf5_key, but we keep a local
-        copy here to avoid cross-mixin import/order issues.
-        """
-        try:
-            if isinstance(hdf5_key, bytes):
-                return hdf5_key.decode("utf-8", errors="replace")
-            if isinstance(hdf5_key, str):
-                return hdf5_key
-            if isinstance(hdf5_key, tuple):
-                if len(hdf5_key) >= 1 and isinstance(hdf5_key[0], (str, bytes)):
-                    first = hdf5_key[0]
-                    if isinstance(first, bytes):
-                        first = first.decode("utf-8", errors="replace")
-                    if all(isinstance(x, (str, bytes)) for x in hdf5_key):
-                        parts = []
-                        for x in hdf5_key:
-                            if isinstance(x, bytes):
-                                x = x.decode("utf-8", errors="replace")
-                            x = (x or "").strip("/")
-                            if x:
-                                parts.append(x)
-                        if not parts:
-                            return ""
-                        path = "/".join(parts)
-                        if str(first).startswith("/"):
-                            path = "/" + path.lstrip("/")
-                        return path
-                    return str(first)
-                return str(hdf5_key)
-            return str(hdf5_key)
-        except Exception:
-            return str(hdf5_key)
+        """Return the HDF5-relative path part from tree/legacy payloads."""
+        return h5load.normalize_hdf5_path(
+            hdf5_key,
+            known_file_paths=getattr(self, "hdf5_files", {}),
+        )
 
     def _uncheck_tree_items_for_filter(self, filter_str: str) -> None:
         """Uncheck matching items in the left HDF5 tree.
@@ -117,11 +90,13 @@ class DataMixin:
             tree.blockSignals(True)
             for item in self._iter_tree_items() or []:
                 try:
-                    data = item.data(0, Qt.UserRole)
-                    if not isinstance(data, tuple) or len(data) != 2:
+                    payload = h5load.split_tree_payload(
+                        item.data(0, Qt.UserRole),
+                        known_file_paths=getattr(self, "hdf5_files", {}) or {},
+                    )
+                    if payload is None:
                         continue
-                    _abs_path, hdf5_path = data
-                    hdf5_path = self._normalize_hdf5_key(hdf5_path)
+                    _abs_path, hdf5_path = payload
                     if not isinstance(hdf5_path, str):
                         continue
                     if filter_str and filter_str in hdf5_path and item.checkState(0) == Qt.Checked:
@@ -890,6 +865,463 @@ class DataMixin:
             pass
 
 
+    def _is_supported_hdf5_path(self, path) -> bool:
+        """Return True for local files with supported HDF5 extensions."""
+        return h5load.is_supported_hdf5_file(path)
+
+    def _show_status_message(self, text: str, timeout_ms: int = 4000) -> None:
+        """Best-effort status-bar message helper."""
+        try:
+            self.statusBar().showMessage(str(text), int(timeout_ms))
+        except Exception:
+            pass
+
+    def _find_loaded_hdf5_by_basename(self, abs_path_or_name):
+        """Find an already loaded HDF5 file by file name only, not full path."""
+        return h5load.find_loaded_by_basename(
+            abs_path_or_name,
+            getattr(self, "hdf5_files", {}) or {},
+        )
+
+    def _tree_item_for_hdf5_path(self, abs_path):
+        """Return the top-level file item for an HDF5 path, if present."""
+        try:
+            abs_path = h5load.normalize_abs_path(abs_path)
+            tree = getattr(self, "tree", None)
+            if tree is None:
+                return None
+            for i in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(i)
+                payload = h5load.split_tree_payload(
+                    item.data(0, Qt.UserRole),
+                    known_file_paths=getattr(self, "hdf5_files", {}) or {},
+                )
+                if payload is None:
+                    continue
+                item_abs, item_h5 = payload
+                if item_abs == abs_path and not item_h5:
+                    return item
+        except Exception:
+            pass
+        return None
+
+    def _update_tree_abs_path(self, item, old_abs_path, new_abs_path) -> None:
+        """Update stored abs_path values in an existing HDF5 tree branch."""
+        if item is None:
+            return
+        old_abs_path = h5load.normalize_abs_path(old_abs_path)
+        new_abs_path = h5load.normalize_abs_path(new_abs_path)
+        try:
+            payload = h5load.split_tree_payload(
+                item.data(0, Qt.UserRole),
+                known_file_paths=getattr(self, "hdf5_files", {}) or {},
+            )
+            if payload is not None:
+                item_abs, h5_path = payload
+                if item_abs == old_abs_path:
+                    item.setData(0, Qt.UserRole, h5load.make_tree_payload(new_abs_path, h5_path))
+        except Exception:
+            pass
+        try:
+            for i in range(item.childCount()):
+                self._update_tree_abs_path(item.child(i), old_abs_path, new_abs_path)
+        except Exception:
+            pass
+
+    def _remap_storage_key(self, key, old_abs_path, new_abs_path):
+        """Replace the abs_path prefix in storage keys of the form abs_path##hdf5_path."""
+        return h5load.remap_storage_key(key, old_abs_path, new_abs_path)
+
+    def _remap_path_prefix_dict_keys(self, attr_name: str, old_abs_path: str, new_abs_path: str) -> None:
+        """Best-effort remap of dict keys that use the storage-key prefix."""
+        try:
+            d = getattr(self, attr_name, None)
+            if not isinstance(d, dict):
+                return
+            new_d = {}
+            changed = False
+            for k, v in d.items():
+                nk = self._remap_storage_key(k, old_abs_path, new_abs_path)
+                if nk != k:
+                    changed = True
+                new_d[nk] = v
+            if changed:
+                setattr(self, attr_name, new_d)
+        except Exception:
+            pass
+
+    def _replace_source_path_references(self, old_abs_path, new_abs_path) -> None:
+        """Best-effort remap when a same-named file is refreshed from a new path.
+
+        The common beamline case refreshes the same file path, so this normally does
+        nothing.  If a same-named file is dropped from another folder, remap the most
+        important in-memory keys so existing processed/plotted work remains connected
+        to the refreshed source where possible.
+        """
+        try:
+            old_abs_path = os.path.abspath(str(old_abs_path))
+            new_abs_path = os.path.abspath(str(new_abs_path))
+        except Exception:
+            old_abs_path = str(old_abs_path)
+            new_abs_path = str(new_abs_path)
+        if old_abs_path == new_abs_path:
+            return
+
+        # File registry
+        try:
+            if isinstance(getattr(self, "hdf5_files", None), dict):
+                self.hdf5_files.pop(old_abs_path, None)
+                self.hdf5_files[new_abs_path] = True
+        except Exception:
+            pass
+
+        # Raw/processed/plotted bookkeeping keyed by abs_path##hdf5_path.
+        for attr in (
+            "plot_data", "raw_visibility", "_raw_key_sources", "curve_display_names",
+            "_curve_color_map", "plotted_lines", "original_line_data", "custom_labels",
+            "plotted_metadata",
+        ):
+            self._remap_path_prefix_dict_keys(attr, old_abs_path, new_abs_path)
+
+        # Sets/lists of plotted storage keys.
+        try:
+            pc = getattr(self, "plotted_curves", None)
+            if isinstance(pc, set):
+                self.plotted_curves = {self._remap_storage_key(k, old_abs_path, new_abs_path) for k in pc}
+            elif isinstance(pc, list):
+                self.plotted_curves = [self._remap_storage_key(k, old_abs_path, new_abs_path) for k in pc]
+        except Exception:
+            pass
+
+        # Energy cache keys use abs_path::parent.
+        try:
+            cache = getattr(self, "energy_cache", None)
+            if isinstance(cache, dict):
+                prefix = old_abs_path + "::"
+                new_cache = {}
+                for k, v in cache.items():
+                    if isinstance(k, str) and k.startswith(prefix):
+                        new_cache[new_abs_path + k[len(old_abs_path):]] = v
+                    else:
+                        new_cache[k] = v
+                self.energy_cache = new_cache
+        except Exception:
+            pass
+
+        # Summed curve source lists may contain raw storage keys.
+        try:
+            sources = getattr(self, "_summed_curve_sources", None)
+            if isinstance(sources, dict):
+                new_sources = {}
+                for k, vals in sources.items():
+                    nk = self._remap_storage_key(k, old_abs_path, new_abs_path)
+                    try:
+                        nvals = [self._remap_storage_key(v, old_abs_path, new_abs_path) for v in vals]
+                    except Exception:
+                        nvals = vals
+                    new_sources[nk] = nvals
+                self._summed_curve_sources = new_sources
+        except Exception:
+            pass
+
+        # Update source_file metadata values and Matplotlib line dataset keys.
+        try:
+            md = getattr(self, "plotted_metadata", None)
+            if isinstance(md, dict):
+                for meta in md.values():
+                    if isinstance(meta, dict) and meta.get("source_file") == old_abs_path:
+                        meta["source_file"] = new_abs_path
+        except Exception:
+            pass
+        try:
+            lines = getattr(self, "plotted_lines", None)
+            if isinstance(lines, dict):
+                for k, line in lines.items():
+                    try:
+                        if getattr(line, "dataset_key", None) == old_abs_path:
+                            line.dataset_key = new_abs_path
+                        elif isinstance(getattr(line, "dataset_key", None), str):
+                            line.dataset_key = self._remap_storage_key(line.dataset_key, old_abs_path, new_abs_path)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Update plotted list item keys and embedded widgets.
+        try:
+            plotted_list = getattr(self, "plotted_list", None)
+            if plotted_list is not None:
+                for row in range(plotted_list.count()):
+                    item = plotted_list.item(row)
+                    if item is None:
+                        continue
+                    try:
+                        key = item.data(Qt.UserRole)
+                        item.setData(Qt.UserRole, self._remap_storage_key(key, old_abs_path, new_abs_path))
+                    except Exception:
+                        pass
+                    try:
+                        widget = plotted_list.itemWidget(item)
+                        if widget is not None and hasattr(widget, "key"):
+                            widget.key = self._remap_storage_key(widget.key, old_abs_path, new_abs_path)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _make_hdf5_tree_child(self, abs_path, hdf5_path, display_name, h5_obj):
+        """Create a tree item for an HDF5 group/dataset, preserving lazy loading."""
+        child_item = QTreeWidgetItem([str(display_name)])
+        child_item.setData(0, Qt.UserRole, h5load.make_tree_payload(abs_path, hdf5_path))
+        try:
+            if isinstance(h5_obj, h5py.Group) and h5_obj.keys():
+                child_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                child_item.addChild(QTreeWidgetItem(["(click to expand)"]))
+            elif isinstance(h5_obj, h5py.Dataset) and h5_obj.ndim == 1:
+                key = f"{abs_path}##{hdf5_path}"
+                state = Qt.Checked if getattr(self, "raw_visibility", {}).get(key, False) else Qt.Unchecked
+                child_item.setCheckState(0, state)
+        except Exception:
+            pass
+        return child_item
+
+    def _tree_item_has_dummy_child(self, item) -> bool:
+        try:
+            return item.childCount() == 1 and item.child(0).text(0) == "(click to expand)" and not item.child(0).data(0, Qt.UserRole)
+        except Exception:
+            return False
+
+    def _refresh_loaded_hdf5_tree_branch(self, h5_file, item, abs_path, hdf5_path: str) -> None:
+        """Add missing HDF5 children to already-loaded tree branches.
+
+        Existing items, check states, and expanded branches are preserved.  Unexpanded
+        lazy branches keep their dummy child; they will load from the refreshed file
+        when the user expands them.
+        """
+        try:
+            if hdf5_path:
+                if hdf5_path not in h5_file:
+                    return
+                obj = h5_file[hdf5_path]
+            else:
+                obj = h5_file
+            if not isinstance(obj, (h5py.File, h5py.Group)):
+                return
+        except Exception:
+            return
+
+        # If a non-root branch is still lazy, leave it lazy. Root/file items are
+        # refreshed immediately so newly appended entries become visible at once.
+        try:
+            if hdf5_path and self._tree_item_has_dummy_child(item):
+                return
+            if self._tree_item_has_dummy_child(item):
+                item.removeChild(item.child(0))
+        except Exception:
+            pass
+
+        existing = {}
+        try:
+            for i in range(item.childCount()):
+                ch = item.child(i)
+                payload = h5load.split_tree_payload(
+                    ch.data(0, Qt.UserRole),
+                    known_file_paths=getattr(self, "hdf5_files", {}) or {},
+                )
+                if payload is not None:
+                    existing[payload[1]] = ch
+        except Exception:
+            existing = {}
+
+        try:
+            for name in obj.keys():
+                child_path = f"{hdf5_path}/{name}" if hdf5_path else str(name)
+                if child_path not in existing:
+                    try:
+                        item.addChild(self._make_hdf5_tree_child(abs_path, child_path, name, obj[name]))
+                    except Exception:
+                        pass
+                else:
+                    child_item = existing.get(child_path)
+                    if child_item is not None and child_item.childCount() > 0 and not self._tree_item_has_dummy_child(child_item):
+                        self._refresh_loaded_hdf5_tree_branch(h5_file, child_item, abs_path, child_path)
+        except Exception:
+            pass
+
+    def refresh_hdf5_file(self, existing_abs_path, new_abs_path):
+        """Refresh an already loaded same-named HDF5 file in place.
+
+        Existing raw selections and plotted/processed work are kept where possible.
+        Newly discovered HDF5 entries/datasets are added to the left tree.  This is
+        intended for append-only acquisition files that grow while the GUI is open.
+        """
+        existing_abs_path = os.path.abspath(str(existing_abs_path))
+        new_abs_path = os.path.abspath(str(new_abs_path))
+
+        # Validate readability before changing application state.
+        try:
+            with self._open_h5_read(new_abs_path) as f:
+                has_children = len(f.keys()) > 0
+        except Exception as exc:
+            raise RuntimeError(f"Could not refresh HDF5 file:\n{new_abs_path}\n\n{exc}") from exc
+
+        item = self._tree_item_for_hdf5_path(existing_abs_path)
+        if item is None:
+            # Conservative fallback: load normally if the tree item cannot be found.
+            return self.load_hdf5_file(new_abs_path)
+
+        try:
+            tree = getattr(self, "tree", None)
+            if tree is not None:
+                tree.blockSignals(True)
+
+            if existing_abs_path != new_abs_path:
+                self._replace_source_path_references(existing_abs_path, new_abs_path)
+                self._update_tree_abs_path(item, existing_abs_path, new_abs_path)
+            else:
+                self.hdf5_files[new_abs_path] = True
+
+            item.setText(0, os.path.basename(new_abs_path))
+            item.setData(0, Qt.UserRole, h5load.make_tree_payload(new_abs_path, ""))
+            if has_children:
+                item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                with self._open_h5_read(new_abs_path) as f:
+                    self._refresh_loaded_hdf5_tree_branch(f, item, new_abs_path, "")
+            item.setExpanded(True)
+        finally:
+            try:
+                tree = getattr(self, "tree", None)
+                if tree is not None:
+                    tree.blockSignals(False)
+            except Exception:
+                pass
+
+        try:
+            self.populate_norm_channels(new_abs_path)
+        except Exception:
+            pass
+        try:
+            QTimer.singleShot(0, getattr(self, "_refresh_all_in_channel_combo", lambda: None))
+        except Exception:
+            pass
+        try:
+            self.update_file_label()
+        except Exception:
+            pass
+        try:
+            self._show_status_message(f"Refreshed {os.path.basename(new_abs_path)}", 4000)
+        except Exception:
+            pass
+
+    def load_hdf5_paths(self, file_paths, source: str = "dialog") -> None:
+        """Load or refresh one or more HDF5 files using shared Open/D&D behavior."""
+        paths = list(file_paths or [])
+        if not paths:
+            return
+
+        valid_paths, skipped = h5load.split_supported_hdf5_paths(
+            paths,
+            dedupe_by_basename=True,
+            require_exists=True,
+        )
+
+        if not valid_paths:
+            if skipped:
+                QMessageBox.warning(
+                    self,
+                    "No HDF5 files loaded",
+                    "No supported HDF5 files were found.\n\nSkipped:\n" + "\n".join(skipped),
+                )
+            return
+
+        duplicates = []
+        new_paths = []
+        for abs_path in valid_paths:
+            existing = self._find_loaded_hdf5_by_basename(abs_path)
+            if existing:
+                duplicates.append((existing, abs_path))
+            else:
+                new_paths.append(abs_path)
+
+        refresh_duplicates = False
+        if duplicates:
+            try:
+                names = "\n".join(f"• {os.path.basename(new)}" for _old, new in duplicates)
+                reply = QMessageBox.question(
+                    self,
+                    "Refresh already loaded HDF5 file(s)",
+                    "The following HDF5 file name(s) are already loaded:\n\n"
+                    f"{names}\n\n"
+                    "Refresh them from disk?\n\n"
+                    "Existing processed/plotted work will be kept where possible. "
+                    "New curves found in the refreshed file(s) will be added.",
+                    QMessageBox.Ok | QMessageBox.Cancel,
+                    QMessageBox.Cancel,
+                )
+                refresh_duplicates = (reply == QMessageBox.Ok)
+            except Exception:
+                refresh_duplicates = False
+
+        failures = []
+        loaded_count = 0
+        refreshed_count = 0
+
+        if new_paths:
+            # Preserve the previous Open-HDF5 behavior for genuinely new files.
+            try:
+                self.region_states.clear()
+                self.proc_region_states.clear()
+            except Exception:
+                pass
+
+        if refresh_duplicates:
+            for existing_abs, new_abs in duplicates:
+                try:
+                    self.refresh_hdf5_file(existing_abs, new_abs)
+                    refreshed_count += 1
+                except Exception as exc:
+                    failures.append(f"{os.path.basename(new_abs)}: {exc}")
+        elif duplicates:
+            skipped.extend(os.path.basename(new_abs) for _existing_abs, new_abs in duplicates)
+
+        for abs_path in new_paths:
+            try:
+                self.load_hdf5_file(abs_path)
+                loaded_count += 1
+            except Exception as exc:
+                failures.append(f"{os.path.basename(abs_path)}: {exc}")
+
+        try:
+            self.combo_poly.setCurrentIndex(2)
+        except Exception:
+            pass
+        try:
+            self.update_file_label()
+        except Exception:
+            pass
+
+        if skipped:
+            QMessageBox.warning(
+                self,
+                "Skipped files",
+                "Some files were not loaded.\n\nSkipped:\n" + "\n".join(skipped),
+            )
+
+        if failures:
+            QMessageBox.critical(
+                self,
+                "HDF5 loading failed",
+                "Some HDF5 files could not be loaded/refreshed.\n\n" + "\n".join(failures),
+            )
+
+        if loaded_count or refreshed_count:
+            parts = []
+            if loaded_count:
+                parts.append(f"loaded {loaded_count}")
+            if refreshed_count:
+                parts.append(f"refreshed {refreshed_count}")
+            self._show_status_message("HDF5 file(s) " + ", ".join(parts), 5000)
+
     def open_file(self):
         dialog = QFileDialog(self, "Open HDF5 File(s)")
         dialog.setOption(QFileDialog.DontUseNativeDialog, True)          # keep control over size
@@ -917,12 +1349,7 @@ class DataMixin:
         if dialog.exec_() == QDialog.Accepted:
             file_paths = dialog.selectedFiles()
             if file_paths:
-                self.region_states.clear()
-                self.proc_region_states.clear()
-                for file_path in file_paths:
-                    self.load_hdf5_file(os.path.abspath(file_path))
-                self.combo_poly.setCurrentIndex(2)
-                self.update_file_label()
+                self.load_hdf5_paths(file_paths, source="dialog")
 
     def load_hdf5_file(self, abs_path):
         """
@@ -930,27 +1357,44 @@ class DataMixin:
         Add a top-level item and a dummy child for lazy expansion.
         """
         try:
-            # Mark file as known without keeping it open
-            abs_path = os.path.abspath(abs_path)
-            self.hdf5_files[abs_path] = True
+            abs_path = os.path.abspath(str(abs_path))
 
-            abs_path = os.path.abspath(abs_path)
-            file_item = QTreeWidgetItem([os.path.basename(abs_path)])
-            file_item.setData(0, Qt.UserRole, (abs_path, ""))
-
-            has_children = False
+            # Validate readability before modifying application state.
             try:
-                with (self._open_h5_read(abs_path)) as f:
+                with self._open_h5_read(abs_path) as f:
                     has_children = len(f.keys()) > 0
+            except Exception as exc:
+                raise RuntimeError(f"Could not open HDF5 file:\n{abs_path}\n\n{exc}") from exc
+
+            tree = getattr(self, "tree", None)
+            try:
+                if tree is not None:
+                    tree.blockSignals(True)
+
+                self.hdf5_files[abs_path] = True
+
+                file_item = QTreeWidgetItem([os.path.basename(abs_path)])
+                file_item.setData(0, Qt.UserRole, h5load.make_tree_payload(abs_path, ""))
+
+                if has_children:
+                    file_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                    file_item.addChild(QTreeWidgetItem(["(click to expand)"]))
+
+                self.tree.addTopLevelItem(file_item)
+                file_item.setExpanded(True)
+            finally:
+                try:
+                    if tree is not None:
+                        tree.blockSignals(False)
+                except Exception:
+                    pass
+
+            # If signals were blocked during insertion, populate the first level explicitly.
+            try:
+                if has_children:
+                    self.load_subtree(file_item)
             except Exception:
-                has_children = False
-
-            if has_children:
-                file_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
-                file_item.addChild(QTreeWidgetItem(["(click to expand)"]))
-
-            self.tree.addTopLevelItem(file_item)
-            file_item.setExpanded(True)
+                pass
 
             # Ensure this scans internally with short-lived opens too
             self.populate_norm_channels(abs_path)
@@ -960,7 +1404,11 @@ class DataMixin:
             QTimer.singleShot(0, getattr(self, '_refresh_all_in_channel_combo', lambda: None))
 
         except Exception as e:
-            self.file_label.setText(f"Error opening file: {e}")
+            try:
+                self.file_label.setText(f"Error opening file: {e}")
+            except Exception:
+                pass
+            raise
 
     def populate_norm_channels(self, abs_path):
         """Populate normalization channels using a short-lived file open (non-locking)."""
@@ -1009,10 +1457,13 @@ class DataMixin:
                     self.combo_norm.setCurrentIndex(i)
                     return
     def load_subtree(self, item):
-        data = item.data(0, Qt.UserRole)
-        if not data:
+        payload = h5load.split_tree_payload(
+            item.data(0, Qt.UserRole),
+            known_file_paths=getattr(self, "hdf5_files", {}) or {},
+        )
+        if payload is None:
             return
-        abs_path, hdf5_path = data
+        abs_path, hdf5_path = payload
         try:
             with (self._open_h5_read(abs_path)) as f:
                 if hdf5_path == "":
@@ -1020,7 +1471,7 @@ class DataMixin:
                         item.removeChild(item.child(0))
                         for key in f.keys():
                             child_item = QTreeWidgetItem([key])
-                            child_item.setData(0, Qt.UserRole, (abs_path, key))
+                            child_item.setData(0, Qt.UserRole, h5load.make_tree_payload(abs_path, key))
                             sub_obj = f[key]
                             if isinstance(sub_obj, h5py.Group) and sub_obj.keys():
                                 child_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
@@ -1037,7 +1488,7 @@ class DataMixin:
                             item.removeChild(item.child(0))
                             for key in obj.keys():
                                 child_item = QTreeWidgetItem([key])
-                                child_item.setData(0, Qt.UserRole, (abs_path, f"{hdf5_path}/{key}"))
+                                child_item.setData(0, Qt.UserRole, h5load.make_tree_payload(abs_path, f"{hdf5_path}/{key}"))
                                 sub_obj = obj[key]
                                 if isinstance(sub_obj, h5py.Group) and sub_obj.keys():
                                     child_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
