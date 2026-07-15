@@ -7,9 +7,11 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QMessageBox, QTabWidget, QLabel,
     QSpinBox, QDoubleSpinBox, QCheckBox, QSizePolicy, QListWidget,
-    QListWidgetItem, QDialog, QTextEdit, QDialogButtonBox, QComboBox, QInputDialog, QGroupBox, QFormLayout, QSplitter
+    QListWidgetItem, QDialog, QTextEdit, QDialogButtonBox, QComboBox,
+    QInputDialog, QGroupBox, QFormLayout, QSplitter, QScrollArea,
+    QTableWidget, QTableWidgetItem, QHeaderView
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -17,108 +19,16 @@ from matplotlib.figure import Figure
 
 from sklearn.decomposition import PCA, NMF
 
-try:
-    from scipy.optimize import nnls as sp_nnls
-    HAVE_SCIPY = True
-except Exception:
-    HAVE_SCIPY = False
-
-
-# --- / Utilities / Core algorithms
-
-def nnls_solve(A, b):
-    """Solve non-negative least squares: min_x ||Ax - b||^2, x >= 0."""
-    if HAVE_SCIPY:
-        x, _ = sp_nnls(A, b)
-        return x
-    # Fallback: Tikhonov-regularized least squares + projection
-    AtA = A.T @ A + 1e-10 * np.eye(A.shape[1])
-    Atb = A.T @ b
-    x = np.linalg.solve(AtA, Atb)
-    return np.maximum(x, 0.0)
-
-
-def tikhonov_smooth_matrix(S, lam=0.0):
-    """Simple 1D Tikhonov smoothing on each row of S."""
-    if lam <= 0.0:
-        return S
-    k, m = S.shape
-    S_sm = S.copy()
-    for r in range(k):
-        y = S[r]
-        if m < 3:
-            continue
-        main = (1 + 2 * lam) * np.ones(m)
-        off = (-lam) * np.ones(m - 1)
-        cprime = np.zeros(m - 1)
-        dprime = np.zeros(m)
-        cprime[0] = off[0] / main[0]
-        dprime[0] = y[0] / main[0]
-        for i in range(1, m - 1):
-            denom = main[i] - off[i - 1] * cprime[i - 1]
-            cprime[i] = off[i] / denom
-            dprime[i] = (y[i] - off[i - 1] * dprime[i - 1]) / denom
-        denom = main[m - 1] - off[m - 2] * cprime[m - 2]
-        dprime[m - 1] = (y[m - 1] - off[m - 2] * dprime[m - 2]) / denom
-        x = np.zeros(m)
-        x[m - 1] = dprime[m - 1]
-        for i in range(m - 2, -1, -1):
-            x[i] = dprime[i] - cprime[i] * x[i + 1]
-        S_sm[r] = np.maximum(x, 0.0)
-    return S_sm
-
-
-def mcr_als(X, k, S_init=None, max_iter=500, tol=1e-7,
-            closure=True, smooth=False, smooth_lambda=0.0):
-    """
-    Basic MCR-ALS with non-negativity (via NNLS) and optional closure + smoothing.
-
-    X: (n_samples, n_energies), non-negative
-    Returns C (n,k), S (k,m), err (RMSE)
-    """
-    n, m = X.shape
-    rng = np.random.default_rng(0)
-    if S_init is None:
-        S = np.maximum(rng.random((k, m)), 1e-12)
-    else:
-        S = np.maximum(S_init.copy(), 1e-12)
-    C = np.zeros((n, k))
-    prev = np.inf
-    converged = False
-    for it in range(max_iter):
-        # Update C by row-wise NNLS on S^T
-        for i in range(n):
-            C[i, :] = nnls_solve(S.T, X[i, :])
-        C = np.maximum(C, 0.0)
-        if closure:
-            rs = C.sum(axis=1, keepdims=True)
-            rs[rs == 0] = 1.0
-            C = C / rs
-
-        # Update S by column-wise NNLS on C
-        S_new = np.zeros_like(S)
-        for j in range(m):
-            S_new[:, j] = nnls_solve(C, X[:, j])
-        S = np.maximum(S_new, 0.0)
-
-        if smooth and smooth_lambda > 0.0:
-            S = tikhonov_smooth_matrix(S, lam=smooth_lambda)
-
-        Xhat = C @ S
-        err = np.sqrt(np.mean((X - Xhat) ** 2))
-        if abs(prev - err) < tol:
-            converged = True
-            break
-        prev = err
-    return C, S, err, it + 1, converged
-
-
-def rmse_per_sample(X, Xhat):
-    return np.sqrt(((Xhat - X) ** 2).mean(axis=1))
-
-
-def mean_residual_vs_energy(X, Xhat):
-    return (X - Xhat).mean(axis=0)
+from flexpes_nexafs.decomposition.mcr_als_core import (
+    estimate_local_concentration_stability,
+    make_random_s_init,
+    mean_residual_vs_energy,
+    mcr_als,
+    nnls_solve,
+    rmse_per_sample,
+    tikhonov_smooth_matrix,
+    validate_component_bounds,
+)
 
 
 # ---
@@ -638,6 +548,7 @@ class BaseAnalysisTab(QWidget):
         self.results = {}
 
         root = QVBoxLayout(self)
+        self.root_layout = root
 
         # Controls row
         self.ctrl = QHBoxLayout()
@@ -646,36 +557,41 @@ class BaseAnalysisTab(QWidget):
         # Short status line (shows what happened after "Run")
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: #444;")
+        self.lbl_status.setToolTip("Shows the latest analysis status and warnings.")
         root.addWidget(self.lbl_status)
 
         self.chk_auto_k = QCheckBox("Auto k (PCA ≥99% EVR)")
         self.chk_auto_k.setChecked(False)
-        self.chk_auto_k.setToolTip(
-            "If enabled, k is chosen automatically from PCA so that the cumulative explained variance ratio (EVR) reaches 99%.\n"
-            "This is a practical starting point for many smooth XAS series."
-        )
+        self.chk_auto_k.setToolTip("Estimate k from PCA. If off, use manual k.")
         self.ctrl.addWidget(self.chk_auto_k)
 
         self.lbl_k = QLabel("k:")
+        self.lbl_k.setToolTip("Number of components.")
         self.ctrl.addWidget(self.lbl_k)
 
         self.spin_k = QSpinBox()
         self.spin_k.setRange(1, 10)
         self.spin_k.setValue(2)
         self.spin_k.setEnabled(True)
-        self.spin_k.setToolTip(
-            "Manual number of components (k). Used only when Auto k is disabled.\n"
-            "Chemically, k should roughly match the number of independent spectral patterns."
-        )
+        self.spin_k.setToolTip("Number of components when Auto k is off.")
         self.chk_auto_k.toggled.connect(self.spin_k.setDisabled)
         self.ctrl.addWidget(self.spin_k)
 
         # We will add method-specific controls in subclasses by using self.ctrl.addWidget(...)
         # After that, each subclass calls self.finalize_controls() to add Help + Run.
 
+        # Main analysis area. By default only the plot area is visible; MCR-ALS
+        # can show a right-side sidebar without changing PCA/NMF behavior.
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        root.addWidget(self.main_splitter, 1)
+
+        self.plot_area_widget = QWidget()
+        self.plot_area_layout = QVBoxLayout(self.plot_area_widget)
+        self.plot_area_layout.setContentsMargins(0, 0, 0, 0)
+
         # Plots area: components and concentrations side-by-side
         top = QHBoxLayout()
-        root.addLayout(top, 2)
+        self.plot_area_layout.addLayout(top, 2)
 
         self.fig_comp, self.canvas_comp = new_canvas()
         self.ax_comp = self.fig_comp.add_subplot(111)
@@ -697,13 +613,30 @@ class BaseAnalysisTab(QWidget):
         # Error canvas (no toolbar)
         self.fig_err, self.canvas_err = new_canvas()
         self.ax_err = self.fig_err.add_subplot(111)
-        root.addWidget(self.canvas_err, 1)
+        self.plot_area_layout.addWidget(self.canvas_err, 1)
+
+        self.main_splitter.addWidget(self.plot_area_widget)
+
+        self.sidebar_scroll = QScrollArea()
+        self.sidebar_scroll.setWidgetResizable(True)
+        self.sidebar_widget = QWidget()
+        self.sidebar_layout = QVBoxLayout(self.sidebar_widget)
+        self.sidebar_layout.setContentsMargins(8, 8, 8, 8)
+        self.sidebar_layout.setSpacing(8)
+        self.sidebar_scroll.setWidget(self.sidebar_widget)
+        self.sidebar_scroll.setVisible(False)
+        self.main_splitter.addWidget(self.sidebar_scroll)
+        self.main_splitter.setStretchFactor(0, 4)
+        self.main_splitter.setStretchFactor(1, 1)
 
         # Run + Help are created here but added to layout in finalize_controls()
         # Run, Export and Help buttons are created here but added to layout in finalize_controls()
         self.btn_export = QPushButton("Export")
+        self.btn_export.setToolTip("Export current analysis results.")
         self.btn_help = QPushButton("Help")
+        self.btn_help.setToolTip("Show help for this analysis panel.")
         self.btn_run = QPushButton("Run")
+        self.btn_run.setToolTip("Run the analysis with current settings.")
     def finalize_controls(self):
         """Call at end of subclass __init__ to add Export, Help and Run in the correct place."""
         self.ctrl.addStretch(1)
@@ -1002,7 +935,7 @@ class PCATab(BaseAnalysisTab):
             self,
             "Export PCA results",
             "Select what to export:",
-            ["Components", "Fractions", "RMS errors"],
+            ["Components", "Fractions", "Stability σ(C)", "RMS errors"],
             0,
             False,
         )
@@ -1273,7 +1206,7 @@ class NMFTab(BaseAnalysisTab):
             self,
             "Export NMF results",
             "Select what to export:",
-            ["Components", "Fractions", "RMS errors"],
+            ["Components", "Fractions", "Stability σ(C)", "RMS errors"],
             0,
             False,
         )
@@ -1335,97 +1268,574 @@ class MCRTab(BaseAnalysisTab):
         self.pca_tab = pca_tab
         self.nmf_tab = nmf_tab
 
-        # MCR-specific controls AFTER k, BEFORE stretch
-        self.ctrl.addWidget(QLabel("Init:"))
+        # MCR-specific top-row controls. Keep these aligned with PCA/NMF style.
+        self.chk_auto_k.setToolTip("Estimate k from PCA. If off, use manual k.")
+        self.lbl_k.setToolTip("Number of MCR-ALS components.")
+        self.spin_k.setToolTip("Number of MCR-ALS components when Auto k is off.")
+
+        self.lbl_init = QLabel("Init:")
+        self.lbl_init.setToolTip("Initial guess for MCR-ALS.")
+        self.ctrl.addWidget(self.lbl_init)
         self.cmb_init = QComboBox()
         self.cmb_init.addItems(["NMF components", "random"])
+        self.cmb_init.setToolTip("Initial guess for the component spectra.")
         self.ctrl.addWidget(self.cmb_init)
 
-        self.ctrl.addWidget(QLabel("max_iter:"))
+        self.lbl_mcr_seed = QLabel("Seed:")
+        self.lbl_mcr_seed.setToolTip("Random seed. Used only when Init = random.")
+        self.ctrl.addWidget(self.lbl_mcr_seed)
+        self.spin_mcr_seed = QSpinBox()
+        self.spin_mcr_seed.setRange(0, 999999)
+        self.spin_mcr_seed.setValue(0)
+        self.spin_mcr_seed.setToolTip("Use different seeds to test random starts.")
+        self.ctrl.addWidget(self.spin_mcr_seed)
+
+        self.lbl_iter = QLabel("max_iter:")
+        self.lbl_iter.setToolTip("Maximum number of ALS iterations.")
+        self.ctrl.addWidget(self.lbl_iter)
         self.spin_iter = QSpinBox()
         self.spin_iter.setRange(100, 50000)
         self.spin_iter.setValue(1000)
+        self.spin_iter.setToolTip("Maximum iterations. The fit may stop earlier.")
         self.ctrl.addWidget(self.spin_iter)
 
-        self.lbl_tol = QLabel("ΔRMSE tol:")
-        self.lbl_tol.setToolTip(
-            "Convergence threshold: stop when the improvement in global RMSE between iterations\n"
-            "is smaller than this value. Larger tol stops earlier (faster), smaller tol runs longer."
-        )
-        self.ctrl.addWidget(self.lbl_tol)
-        self.spin_tol = QDoubleSpinBox()
-        self.spin_tol.setRange(1e-12, 1e-2)
-        self.spin_tol.setDecimals(10)
-        self.spin_tol.setSingleStep(1e-8)
-        self.spin_tol.setValue(1e-8)
-        self.spin_tol.setToolTip(
-            "Tolerance on change in global RMSE per iteration (ΔRMSE).\n"
-            "If you see no effect, the algorithm may already be converging well before this limit,\n"
-            "or it may be stopping at max_iter."
-        )
-        self.ctrl.addWidget(self.spin_tol)
+        self._build_mcr_sidebar()
+
+        self.finalize_controls()
+        self._init_mcr_busy_indicator()
+        self.lbl_status.setToolTip("Latest MCR-ALS status and warnings.")
+        self.btn_export.setToolTip("Export MCR-ALS results.")
+        self.btn_help.setToolTip("Show MCR-ALS help.")
+        self.btn_run.setToolTip("Run MCR-ALS. If stability is enabled, repeat fits are run afterwards.")
+        self.cmb_init.currentTextChanged.connect(self._update_mcr_seed_enabled)
+        self._update_mcr_seed_enabled()
+        self.btn_export.clicked.connect(self.export_results)
+        self.btn_run.clicked.connect(self.run_mcr)
+
+
+    def _update_mcr_seed_enabled(self):
+        """Enable Seed only for random MCR-ALS initialization."""
+        use_seed = self.cmb_init.currentText() == "random"
+        if hasattr(self, "spin_mcr_seed"):
+            self.spin_mcr_seed.setEnabled(use_seed)
+        if hasattr(self, "lbl_mcr_seed"):
+            self.lbl_mcr_seed.setEnabled(use_seed)
+
+    def _init_mcr_busy_indicator(self):
+        """Add a small animated busy marker next to the Run button."""
+        self._mcr_busy_frames = ["◐", "◓", "◑", "◒"]
+        self._mcr_busy_index = 0
+        self._mcr_cursor_overridden = False
+        self.lbl_mcr_busy = QLabel("")
+        self.lbl_mcr_busy.setAlignment(Qt.AlignCenter)
+        self.lbl_mcr_busy.setFixedWidth(24)
+        self.lbl_mcr_busy.setToolTip("MCR-ALS is running.")
+        self.lbl_mcr_busy.hide()
+        self._mcr_busy_timer = QTimer(self)
+        self._mcr_busy_timer.setInterval(150)
+        self._mcr_busy_timer.timeout.connect(self._advance_mcr_busy_indicator)
+        idx = self.ctrl.indexOf(self.btn_run)
+        if idx >= 0:
+            self.ctrl.insertWidget(idx, self.lbl_mcr_busy)
+        else:
+            self.ctrl.addWidget(self.lbl_mcr_busy)
+
+    def _advance_mcr_busy_indicator(self):
+        if not hasattr(self, "lbl_mcr_busy"):
+            return
+        self.lbl_mcr_busy.setText(self._mcr_busy_frames[self._mcr_busy_index % len(self._mcr_busy_frames)])
+        self._mcr_busy_index += 1
+
+    def _start_mcr_busy(self):
+        if not hasattr(self, "lbl_mcr_busy"):
+            return
+        self._mcr_busy_index = 0
+        self._advance_mcr_busy_indicator()
+        self.lbl_mcr_busy.show()
+        self.btn_run.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self._mcr_cursor_overridden = True
+        self._mcr_busy_timer.start()
+        QApplication.processEvents()
+
+    def _pulse_mcr_busy(self):
+        self._advance_mcr_busy_indicator()
+        QApplication.processEvents()
+
+    def _stop_mcr_busy(self):
+        if hasattr(self, "_mcr_busy_timer"):
+            self._mcr_busy_timer.stop()
+        if hasattr(self, "lbl_mcr_busy"):
+            self.lbl_mcr_busy.hide()
+        if hasattr(self, "btn_run"):
+            self.btn_run.setEnabled(True)
+        if getattr(self, "_mcr_cursor_overridden", False):
+            QApplication.restoreOverrideCursor()
+            self._mcr_cursor_overridden = False
+        QApplication.processEvents()
+
+    def _build_mcr_sidebar(self):
+        """Build the MCR-ALS constraints/diagnostics sidebar."""
+        self.sidebar_scroll.setVisible(True)
+        self.sidebar_scroll.setMinimumWidth(280)
+        self.main_splitter.setSizes([900, 280])
+
+        constraints_box = QGroupBox("Constraints")
+        constraints_box.setToolTip("MCR-ALS constraints applied during fitting.")
+        constraints_layout = QVBoxLayout(constraints_box)
+
+        self.lbl_nonneg = QLabel("✓ Non-negativity of C and S")
+        self.lbl_nonneg.setToolTip("Always enforced for concentrations and spectra.")
+        constraints_layout.addWidget(self.lbl_nonneg)
 
         self.chk_closure = QCheckBox("Closure (rows of C sum to 1)")
         self.chk_closure.setChecked(True)
-        self.ctrl.addWidget(self.chk_closure)
+        self.chk_closure.setToolTip("Component fractions sum to 1 for each spectrum.")
+        constraints_layout.addWidget(self.chk_closure)
 
-        self.chk_smooth = QCheckBox("Smooth spectra")
+        self.chk_component_bounds = QCheckBox("Component bounds")
+        self.chk_component_bounds.setChecked(False)
+        self.chk_component_bounds.setToolTip("Limit component fractions in percent. Requires Closure.")
+        constraints_layout.addWidget(self.chk_component_bounds)
+
+        self.sidebar_layout.addWidget(constraints_box)
+
+        self.bounds_box = QGroupBox("Component bounds")
+        self.bounds_box.setToolTip("Allowed percentage range for each component.")
+        bounds_layout = QVBoxLayout(self.bounds_box)
+
+        self.bounds_table = QTableWidget(0, 3)
+        self.bounds_table.setHorizontalHeaderLabels(["Component", "Min %", "Max %"])
+        self.bounds_table.horizontalHeaderItem(0).setToolTip("Component index.")
+        self.bounds_table.horizontalHeaderItem(1).setToolTip("Minimum allowed fraction in %.")
+        self.bounds_table.horizontalHeaderItem(2).setToolTip("Maximum allowed fraction in %.")
+        self.bounds_table.setToolTip("Default 0–100% does not constrain the fit.")
+        self.bounds_table.verticalHeader().setVisible(False)
+        self.bounds_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.bounds_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.bounds_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.bounds_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.bounds_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.bounds_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        bounds_layout.addWidget(self.bounds_table)
+
+        self.btn_reset_bounds = QPushButton("Reset bounds")
+        self.btn_reset_bounds.setToolTip("Reset all bounds to 0–100%.")
+        bounds_layout.addWidget(self.btn_reset_bounds)
+
+        self.lbl_bounds_note = QLabel("Default 0–100% leaves the fit unconstrained.")
+        self.lbl_bounds_note.setWordWrap(True)
+        self.lbl_bounds_note.setStyleSheet("color: #555;")
+        self.lbl_bounds_note.setToolTip("Bounds are used only when enabled.")
+        bounds_layout.addWidget(self.lbl_bounds_note)
+
+        self.sidebar_layout.addWidget(self.bounds_box)
+
+        smooth_box = QGroupBox("Spectral regularization")
+        smooth_box.setToolTip("Optional smoothing of component spectra.")
+        smooth_layout = QFormLayout(smooth_box)
+
+        self.chk_smooth = QCheckBox("Smooth component spectra")
         self.chk_smooth.setChecked(False)
-        self.chk_smooth.setToolTip(
-            "Apply gentle smoothing (regularization) to the component spectra S during MCR-ALS.\n"
-            "This can suppress noise in extracted components, but too much smoothing can wash out real features."
-        )
-        self.ctrl.addWidget(self.chk_smooth)
+        self.chk_smooth.setToolTip("Smooth extracted component spectra.")
+        smooth_layout.addRow(self.chk_smooth)
 
-        self.lbl_lambda = QLabel("λ:")
-        self.lbl_lambda.setToolTip(
-            "Smoothing strength (lambda). Larger values produce smoother component spectra.\n"
-            "Typical mild values: 0.01–0.10. Set to 0 for no smoothing."
-        )
-        self.ctrl.addWidget(self.lbl_lambda)
         self.spin_lambda = QDoubleSpinBox()
         self.spin_lambda.setRange(0.0, 1.0)
         self.spin_lambda.setDecimals(3)
         self.spin_lambda.setSingleStep(0.01)
         self.spin_lambda.setValue(0.05)
-        self.spin_lambda.setToolTip(
-            "Smoothing strength (lambda). Only used when 'Smooth spectra' is enabled.\n"
-            "Start with 0.05; reduce if peaks look too broadened; increase if components look noisy."
-        )
         self.spin_lambda.setEnabled(False)
-        self.ctrl.addWidget(self.spin_lambda)
+        self.spin_lambda.setToolTip("Smoothing strength. Larger values give smoother spectra.")
+        self.lbl_lambda = QLabel("Smoothness λ:")
+        self.lbl_lambda.setToolTip("Smoothing strength for component spectra.")
+        smooth_layout.addRow(self.lbl_lambda, self.spin_lambda)
+
+        self.sidebar_layout.addWidget(smooth_box)
+
+        conv_box = QGroupBox("Advanced convergence")
+        conv_box.setToolTip("Stopping settings for MCR-ALS iterations.")
+        conv_layout = QFormLayout(conv_box)
+
+        self.spin_tol = QDoubleSpinBox()
+        self.spin_tol.setRange(1e-12, 1e-2)
+        self.spin_tol.setDecimals(10)
+        self.spin_tol.setSingleStep(1e-7)
+        self.spin_tol.setValue(1e-7)
+        self.spin_tol.setToolTip("Stop when RMSE improvement is below this value.")
+        self.lbl_tol = QLabel("ΔRMSE tolerance:")
+        self.lbl_tol.setToolTip("Stopping criterion, not target RMSE.")
+        conv_layout.addRow(self.lbl_tol, self.spin_tol)
+
+        self.sidebar_layout.addWidget(conv_box)
+
+        stability_box = QGroupBox("Stability band")
+        stability_box.setToolTip("Run-to-run concentration stability.")
+        stability_layout = QFormLayout(stability_box)
+
+        self.chk_stability = QCheckBox("Estimate local stability")
+        self.chk_stability.setChecked(False)
+        self.chk_stability.setToolTip("Repeat MCR-ALS with small perturbations.")
+        stability_layout.addRow(self.chk_stability)
+
+        self.spin_stability_runs = QSpinBox()
+        self.spin_stability_runs.setRange(2, 200)
+        self.spin_stability_runs.setValue(20)
+        self.spin_stability_runs.setToolTip("Number of repeat fits used for σ(C).")
+        self.lbl_stability_runs = QLabel("Runs:")
+        self.lbl_stability_runs.setToolTip("Number of repeat fits used for σ(C).")
+        stability_layout.addRow(self.lbl_stability_runs, self.spin_stability_runs)
+
+        self.spin_stability_perturb = QDoubleSpinBox()
+        self.spin_stability_perturb.setRange(0.1, 50.0)
+        self.spin_stability_perturb.setDecimals(1)
+        self.spin_stability_perturb.setSingleStep(1.0)
+        self.spin_stability_perturb.setValue(5.0)
+        self.spin_stability_perturb.setSuffix(" %")
+        self.spin_stability_perturb.setToolTip("Size of random perturbation.")
+        self.lbl_stability_perturb = QLabel("Perturbation:")
+        self.lbl_stability_perturb.setToolTip("Size of random perturbation.")
+        stability_layout.addRow(self.lbl_stability_perturb, self.spin_stability_perturb)
+
+        self.spin_stability_seed = QSpinBox()
+        self.spin_stability_seed.setRange(0, 999999)
+        self.spin_stability_seed.setValue(1000)
+        self.spin_stability_seed.setToolTip("First seed for repeat fits.")
+        self.lbl_stability_seed = QLabel("First seed:")
+        self.lbl_stability_seed.setToolTip("First seed for repeat fits.")
+        stability_layout.addRow(self.lbl_stability_seed, self.spin_stability_seed)
+
+        self.chk_show_stability_band = QCheckBox("Show stability band")
+        self.chk_show_stability_band.setChecked(True)
+        self.chk_show_stability_band.setToolTip("Show C ± σ(C) on the concentration plot.")
+        stability_layout.addRow(self.chk_show_stability_band)
+
+        self.sidebar_layout.addWidget(stability_box)
+
+        diag_box = QGroupBox("Diagnostics")
+        diag_box.setToolTip("Additional MCR-ALS diagnostics.")
+        diag_layout = QVBoxLayout(diag_box)
+        self.lbl_mcr_diagnostics = QLabel("Diagnostics will appear after running MCR-ALS.")
+        self.lbl_mcr_diagnostics.setWordWrap(True)
+        self.lbl_mcr_diagnostics.setStyleSheet("color: #444;")
+        self.lbl_mcr_diagnostics.setToolTip("Reports bounds and stability after the run.")
+        diag_layout.addWidget(self.lbl_mcr_diagnostics)
+        self.sidebar_layout.addWidget(diag_box)
+        self.sidebar_layout.addStretch(1)
 
         self.chk_smooth.toggled.connect(self.spin_lambda.setEnabled)
+        self.chk_closure.toggled.connect(self._update_bounds_enabled)
+        self.chk_component_bounds.toggled.connect(self._update_bounds_enabled)
+        self.btn_reset_bounds.clicked.connect(self._reset_component_bounds)
+        self.spin_k.valueChanged.connect(self._sync_bounds_table)
+        self.chk_stability.toggled.connect(self._update_stability_enabled)
+        self.chk_show_stability_band.toggled.connect(self._redraw_mcr_concentrations)
+        self._sync_bounds_table()
+        self._update_bounds_enabled()
+        self._update_stability_enabled()
 
-        self.finalize_controls()
-        self.btn_export.clicked.connect(self.export_results)
-        self.btn_run.clicked.connect(self.run_mcr)
+    def _update_stability_enabled(self):
+        """Enable stability-band controls only when local stability is requested."""
+        active = bool(getattr(self, "chk_stability", None) and self.chk_stability.isChecked())
+        for name in (
+            "spin_stability_runs",
+            "spin_stability_perturb",
+            "spin_stability_seed",
+            "chk_show_stability_band",
+            "lbl_stability_runs",
+            "lbl_stability_perturb",
+            "lbl_stability_seed",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(active)
+
+    def _adjust_bounds_table_height(self):
+        """Keep the bounds table just tall enough for its header and rows."""
+        if not hasattr(self, "bounds_table"):
+            return
+        height = self.bounds_table.horizontalHeader().height()
+        for row in range(self.bounds_table.rowCount()):
+            height += self.bounds_table.rowHeight(row)
+        height += 2 * self.bounds_table.frameWidth() + 4
+        self.bounds_table.setMinimumHeight(height)
+        self.bounds_table.setMaximumHeight(height)
+
+    def _make_bound_spinbox(self, value, tooltip):
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 100.0)
+        spin.setDecimals(1)
+        spin.setSingleStep(1.0)
+        spin.setValue(float(value))
+        spin.setSuffix(" %")
+        spin.setToolTip(tooltip)
+        return spin
+
+    def _sync_bounds_table(self):
+        """Resize the bounds table to match the current component count."""
+        if not hasattr(self, "bounds_table"):
+            return
+        k = int(self.spin_k.value())
+        old_bounds = self._get_component_bounds_percent(default_to_full=True)
+        self.bounds_table.setRowCount(k)
+        for row in range(k):
+            item = self.bounds_table.item(row, 0)
+            if item is None:
+                item = QTableWidgetItem(f"Comp {row + 1}")
+                item.setFlags(Qt.ItemIsEnabled)
+                item.setToolTip("MCR-ALS component index.")
+                self.bounds_table.setItem(row, 0, item)
+            else:
+                item.setText(f"Comp {row + 1}")
+
+            if row < len(old_bounds[0]):
+                lo = old_bounds[0][row]
+                hi = old_bounds[1][row]
+            else:
+                lo = 0.0
+                hi = 100.0
+
+            min_spin = self._make_bound_spinbox(
+                lo,
+                "Lower bound in %. Must not exceed Max %.",
+            )
+            max_spin = self._make_bound_spinbox(
+                hi,
+                "Upper bound in %. Must not be below Min %.",
+            )
+            min_spin.valueChanged.connect(lambda _value, r=row: self._on_min_bound_changed(r))
+            max_spin.valueChanged.connect(lambda _value, r=row: self._on_max_bound_changed(r))
+            self.bounds_table.setCellWidget(row, 1, min_spin)
+            self.bounds_table.setCellWidget(row, 2, max_spin)
+        self.bounds_table.resizeRowsToContents()
+        self._adjust_bounds_table_height()
+        self._update_bounds_enabled()
+
+    def _get_component_bounds_percent(self, default_to_full=False):
+        """Return lower/upper bounds from the table in percent units."""
+        if not hasattr(self, "bounds_table"):
+            return [], []
+        lower = []
+        upper = []
+        for row in range(self.bounds_table.rowCount()):
+            min_spin = self.bounds_table.cellWidget(row, 1)
+            max_spin = self.bounds_table.cellWidget(row, 2)
+            if min_spin is None or max_spin is None:
+                if default_to_full:
+                    lower.append(0.0)
+                    upper.append(100.0)
+                continue
+            lower.append(float(min_spin.value()))
+            upper.append(float(max_spin.value()))
+        return lower, upper
+
+    def _on_min_bound_changed(self, row):
+        min_spin = self.bounds_table.cellWidget(row, 1)
+        max_spin = self.bounds_table.cellWidget(row, 2)
+        if min_spin is None or max_spin is None:
+            return
+        if min_spin.value() > max_spin.value():
+            max_spin.blockSignals(True)
+            max_spin.setValue(min_spin.value())
+            max_spin.blockSignals(False)
+
+    def _on_max_bound_changed(self, row):
+        min_spin = self.bounds_table.cellWidget(row, 1)
+        max_spin = self.bounds_table.cellWidget(row, 2)
+        if min_spin is None or max_spin is None:
+            return
+        if max_spin.value() < min_spin.value():
+            min_spin.blockSignals(True)
+            min_spin.setValue(max_spin.value())
+            min_spin.blockSignals(False)
+
+    def _reset_component_bounds(self):
+        for row in range(self.bounds_table.rowCount()):
+            min_spin = self.bounds_table.cellWidget(row, 1)
+            max_spin = self.bounds_table.cellWidget(row, 2)
+            if min_spin is not None:
+                min_spin.setValue(0.0)
+            if max_spin is not None:
+                max_spin.setValue(100.0)
+
+    def _component_bounds_enabled(self):
+        return bool(
+            self.chk_closure.isChecked()
+            and self.chk_component_bounds.isChecked()
+        )
+
+    def _update_bounds_enabled(self):
+        if not hasattr(self, "bounds_table"):
+            return
+        closure = self.chk_closure.isChecked()
+        self.chk_component_bounds.setEnabled(closure)
+        if not closure and self.chk_component_bounds.isChecked():
+            self.chk_component_bounds.blockSignals(True)
+            self.chk_component_bounds.setChecked(False)
+            self.chk_component_bounds.blockSignals(False)
+        active = self._component_bounds_enabled()
+        self.bounds_table.setEnabled(active)
+        self.btn_reset_bounds.setEnabled(active)
+        if not closure:
+            self.lbl_bounds_note.setText("Component bounds require Closure.")
+            self.chk_component_bounds.setToolTip("Component bounds require Closure.")
+        elif active:
+            self.lbl_bounds_note.setText("Bounds are active during MCR-ALS.")
+            self.chk_component_bounds.setToolTip("Limit component fractions in percent.")
+        else:
+            self.lbl_bounds_note.setText("Default 0–100% leaves the fit unconstrained.")
+            self.chk_component_bounds.setToolTip("Limit component fractions in percent. Requires Closure.")
+
+    def _fractional_component_bounds_or_warn(self, k):
+        """Return fractional bounds for mcr_als(), or None if disabled."""
+        if not self._component_bounds_enabled():
+            return None
+        lower_pct, upper_pct = self._get_component_bounds_percent(default_to_full=True)
+        lower = np.asarray(lower_pct[:k], dtype=float) / 100.0
+        upper = np.asarray(upper_pct[:k], dtype=float) / 100.0
+        validation = validate_component_bounds(lower, upper, k=k, target_sum=1.0)
+        if not validation.valid:
+            QMessageBox.warning(
+                self,
+                "Invalid component bounds",
+                "The selected bounds cannot satisfy Closure.\n\n" + validation.message,
+            )
+            return False
+        return lower, upper
+
+    def _update_mcr_diagnostics(self, diagnostics, stability_summary=None):
+        if not hasattr(self, "lbl_mcr_diagnostics"):
+            return
+        lines = []
+        severe_bounds = False
+        severe_message = ""
+        if diagnostics and diagnostics.get("bounds_active"):
+            activity = diagnostics.get("bound_activity")
+            if activity is None:
+                lines.append("Component bounds active.")
+            else:
+                lines.append(activity.message)
+                severe_bounds = bool(activity.severe)
+                severe_message = activity.message
+        else:
+            lines.append("Component bounds not active.")
+
+        if stability_summary is not None:
+            lines.append(stability_summary.message)
+        else:
+            lines.append("Stability band not estimated.")
+
+        self.lbl_mcr_diagnostics.setText("\n".join(lines))
+        if severe_bounds:
+            QMessageBox.warning(
+                self,
+                "Potential over-constraint",
+                "One or more component bounds were active in many spectra.\n\n" + severe_message,
+            )
 
     def get_help_text(self) -> str:
         return (
             "<b>MCR-ALS – Multivariate Curve Resolution by Alternating Least Squares</b><br><br>"
-            "MCR-ALS refines a factorization X ≈ C · S under chemical constraints. Like NMF it keeps C and S non-negative, "
-            "and it can additionally enforce closure and smoothing of the component spectra.<br><br>"
-            "• <b>S</b> – component spectra (rows).<br>"
-            "• <b>C</b> – concentration profiles (one row per sample).<br><br>"
-            "<b>Controls</b><br>"
-            "• <b>Auto k (PCA ≥99% EVR)</b> – uses PCA to suggest the number of components k.<br>"
+            "MCR-ALS models the data matrix as <b>X ≈ C · S</b>.<br>"
+            "• <b>X</b> – input spectra arranged as samples × energy.<br>"
+            "• <b>C</b> – component weights/concentrations, one row per sample.<br>"
+            "• <b>S</b> – component spectra, one row per component.<br><br>"
+            "In this application, non-negativity of both <b>C</b> and <b>S</b> is always enforced. "
+            "This means negative component fractions and negative component spectra are not allowed.<br><br>"
+            "<b>Top controls</b><br>"
+            "• <b>Auto k</b> – estimate the number of components from PCA before running MCR-ALS.<br>"
             "• <b>k</b> – manual number of components when Auto k is off.<br>"
-            "• <b>Init</b> – initial guess for S (e.g. NMF components is often a good starting point).<br>"
-            "• <b>max_iter</b> – maximum ALS iterations.<br>"
-            "• <b>ΔRMSE tol</b> – convergence threshold: stop when the improvement in global RMSE per iteration becomes smaller than this value.<br>"
-            "• <b>Closure</b> – if enabled, each row of C is normalized to sum to 1 (interpretable as fractions).<br>"
-            "• <b>Smooth spectra</b> – applies gentle regularization to S during iterations to suppress noise in extracted components.<br>"
-            "• <b>λ</b> – smoothing strength (lambda). Start small (≈0.01–0.1). Too large values can wash out real spectral features.<br>"
-            "• <b>Run</b> – performs MCR-ALS on the currently selected spectra.<br><br>"
-            "<b>Status line</b><br>"
-            "After Run, the status line reports <b>n</b> (how many spectra were used) and the <b>number of iterations actually performed</b>.<br><br>"
+            "• <b>Init</b> – initial guess for the component spectra. Different choices can converge to slightly different solutions.<br>"
+            "• <b>Seed</b> – random seed used only when Init = random. Same seed gives the same random start.<br>"
+            "• <b>max_iter</b> – maximum number of ALS iterations.<br>"
+            "• <b>Run</b> – run MCR-ALS with the current settings. If stability is enabled, repeat fits are run afterwards.<br><br>"
+            "<b>Closure</b><br>"
+            "Closure normalizes each row of <b>C</b> so that the component fractions for every sample sum to 1. "
+            "With Closure enabled, concentration values can be read as fractions of the total mixture.<br><br>"
+            "<b>Component bounds</b><br>"
+            "Component bounds set optional lower and upper limits for each component fraction, in %. "
+            "They are available only when Closure is enabled, because the limits are interpreted as percentages.<br>"
+            "Default <b>0–100%</b> bounds are neutral and should not change the fit. "
+            "Use narrower bounds only when you have independent physical or chemical reasons, for example a known maximum phase fraction.<br><br>"
+            "Before running, the app checks that the selected bounds can still satisfy Closure. "
+            "For example, the sum of all minimum values must not exceed 100%, and the sum of all maximum values must not be below 100%.<br><br>"
+            "<b>Smooth component spectra</b><br>"
+            "This option applies smoothness regularization to <b>S</b>, the extracted component spectra. "
+            "It penalizes rapid point-to-point changes in the component spectra, making noisy solutions smoother.<br>"
+            "The parameter <b>λ</b> controls the strength of this penalty: λ = 0 gives no smoothing; larger λ gives smoother spectra. "
+            "Too large λ can suppress real sharp spectral features, so start with small values.<br><br>"
+            "<b>ΔRMSE tolerance</b><br>"
+            "This is the stopping criterion for convergence. The algorithm stops when the improvement in RMSE between two ALS iterations "
+            "becomes smaller than this value. It is not the target final RMSE.<br><br>"
+            "<b>Stability band</b><br>"
+            "The stability band is an optional local reliability diagnostic for the concentration profiles <b>C</b>. "
+            "After the reference MCR-ALS run, the app repeats the fit several times with small random perturbations of the selected initialization. "
+            "Components from repeat runs are matched to the reference spectra <b>S</b>, and the run-to-run standard deviation <b>σ(C)</b> is calculated.<br>"
+            "The concentration plot keeps the reference result and can show <b>C ± σ(C)</b> as a shaded band. "
+            "The band can be shown or hidden after the run without recalculating. "
+            "This is not a formal statistical confidence interval; it shows sensitivity to the starting guess.<br>"
+            "• <b>Runs</b> – number of repeat fits.<br>"
+            "• <b>Perturbation</b> – size of the random change applied to the initial guess.<br>"
+            "• <b>First seed</b> – first random seed for the repeat fits; for example 1000 with 20 runs uses seeds 1000–1019.<br>"
+            "The seed is not a physical parameter. It only makes the random perturbations reproducible.<br><br>"
+            "<b>Diagnostics</b><br>"
+            "The right panel reports whether component bounds were active and summarizes the stability band if calculated. "
+            "If a bound is reached in many spectra, the result may be over-constrained. "
+            "This can mean that the imposed limit is too strict, or that the chosen number of components is not appropriate.<br><br>"
             "<b>Plots</b><br>"
-            "• <b>Components</b> – refined component spectra S (often most chemically interpretable).<br>"
-            "• <b>Concentrations</b> – concentration profiles C vs sample index (with closure: fractions that sum to 1).<br>"
-            "• <b>RMSE</b> – reconstruction error per sample (lower is better)."
+            "• <b>Components</b> – refined component spectra <b>S</b>.<br>"
+            "• <b>Concentrations</b> – component weights <b>C</b> vs sample index. With Closure, these are fractions. If enabled, the shaded band shows local σ(C).<br>"
+            "• <b>RMSE</b> – reconstruction error per sample."
         )
 
+
+    def _plot_mcr_concentrations(self, C, C_std=None, closure=True):
+        """Draw MCR-ALS concentrations, optionally with stored stability bands."""
+        C = np.asarray(C, dtype=float)
+        C_std = None if C_std is None else np.asarray(C_std, dtype=float)
+        self.ax_conc.clear()
+        x_idx = np.arange(C.shape[0])
+        show_band = bool(
+            C_std is not None
+            and getattr(self, "chk_show_stability_band", None) is not None
+            and self.chk_show_stability_band.isChecked()
+        )
+        for i in range(C.shape[1]):
+            line, = self.ax_conc.plot(
+                x_idx, C[:, i],
+                marker='o', linestyle='', label=f"Comp {i+1}"
+            )
+            if show_band:
+                lo = C[:, i] - C_std[:, i]
+                hi = C[:, i] + C_std[:, i]
+                if closure:
+                    lo = np.clip(lo, 0.0, 1.0)
+                    hi = np.clip(hi, 0.0, 1.0)
+                self.ax_conc.fill_between(
+                    x_idx,
+                    lo,
+                    hi,
+                    color=line.get_color(),
+                    alpha=0.18,
+                    linewidth=0,
+                )
+        self.ax_conc.set_xlabel("Sample index")
+        self.ax_conc.set_ylabel("Estimated fraction" if closure else "Estimated weight")
+        self.ax_conc.set_title("MCR-ALS concentrations")
+        self.ax_conc.legend(fontsize=8)
+        self.ax_conc.grid(True, which="both", alpha=0.5, linewidth=0.8)
+        self.canvas_conc.draw()
+
+    def _redraw_mcr_concentrations(self):
+        """Toggle the already calculated stability band without rerunning MCR-ALS."""
+        if not getattr(self, "results", None):
+            return
+        C = self.results.get("C")
+        if C is None:
+            return
+        C_std = self.results.get("C_stability_std")
+        closure = bool(self.results.get("closure", getattr(self, "chk_closure", None) and self.chk_closure.isChecked()))
+        self._plot_mcr_concentrations(C, C_std=C_std, closure=closure)
 
     def run_mcr(self):
         if not self.model.ready:
@@ -1487,11 +1897,15 @@ class MCRTab(BaseAnalysisTab):
         self.set_k_default(k_auto)
 
         init_choice = self.cmb_init.currentText()
+        random_seed = int(self.spin_mcr_seed.value())
         max_iter = int(self.spin_iter.value())
         tol = float(self.spin_tol.value())
         closure = self.chk_closure.isChecked()
         smooth = self.chk_smooth.isChecked()
         lam = float(self.spin_lambda.value()) if smooth else 0.0
+        component_bounds = self._fractional_component_bounds_or_warn(k)
+        if component_bounds is False:
+            return
 
         # Init S from NMF if requested
         S_init = None
@@ -1505,12 +1919,78 @@ class MCRTab(BaseAnalysisTab):
             S_init = None
 
         X_pos = np.maximum(X, 0.0)
-        C, S, err, n_iter, converged = mcr_als(
-            X_pos, k=k, S_init=S_init, max_iter=max_iter,
-            tol=tol, closure=closure, smooth=smooth,
-            smooth_lambda=lam
-        )
-        self.lbl_status.setText(f"MCR-ALS: n={n} spectra, iterations={n_iter}")
+        # Keep an explicit initial S so the optional stability band can perturb
+        # exactly the same selected initialization that produced the reference run.
+        reference_s_init = S_init
+        if reference_s_init is None:
+            reference_s_init = make_random_s_init(k, m, random_seed=random_seed)
+
+        self._start_mcr_busy()
+        try:
+            self.lbl_status.setText("MCR-ALS: running…")
+            self._pulse_mcr_busy()
+            C, S, err, n_iter, converged, diagnostics = mcr_als(
+                X_pos, k=k, S_init=reference_s_init, max_iter=max_iter,
+                tol=tol, closure=closure, smooth=smooth,
+                smooth_lambda=lam, component_bounds=component_bounds,
+                random_seed=random_seed,
+                return_diagnostics=True
+            )
+
+            stability_summary = None
+            if self.chk_stability.isChecked():
+                n_stab = int(self.spin_stability_runs.value())
+                perturb_fraction = float(self.spin_stability_perturb.value()) / 100.0
+                first_seed = int(self.spin_stability_seed.value())
+                self.lbl_status.setText(
+                    f"MCR-ALS: n={n} spectra, iterations={n_iter}; estimating stability ({n_stab} runs)…"
+                )
+                self._pulse_mcr_busy()
+
+                def _stability_progress(done, total):
+                    self.lbl_status.setText(
+                        f"MCR-ALS: n={n} spectra, iterations={n_iter}; estimating stability ({done}/{total})…"
+                    )
+                    self._pulse_mcr_busy()
+
+                try:
+                    stability_summary = estimate_local_concentration_stability(
+                        X_pos,
+                        k=k,
+                        S_init=reference_s_init,
+                        S_ref=S,
+                        n_runs=n_stab,
+                        perturb_fraction=perturb_fraction,
+                        first_seed=first_seed,
+                        max_iter=max_iter,
+                        tol=tol,
+                        closure=closure,
+                        smooth=smooth,
+                        smooth_lambda=lam,
+                        component_bounds=component_bounds,
+                        progress_callback=_stability_progress,
+                    )
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self,
+                        "Stability estimate failed",
+                        "MCR-ALS completed, but the stability band could not be calculated.\n\n" + str(exc),
+                    )
+                    stability_summary = None
+        finally:
+            self._stop_mcr_busy()
+
+        status = f"MCR-ALS: n={n} spectra, iterations={n_iter}"
+        if init_choice == "random":
+            status += f", seed={random_seed}"
+        if diagnostics.get("bounds_active"):
+            activity = diagnostics.get("bound_activity")
+            if activity is not None and activity.message != "Component bounds were not active.":
+                status += "; bounds active"
+        if stability_summary is not None:
+            status += f"; stability σ max={100.0 * stability_summary.max_std:.2f}%"
+        self.lbl_status.setText(status)
+        self._update_mcr_diagnostics(diagnostics, stability_summary)
         Xhat = C @ S
 
 
@@ -1529,18 +2009,8 @@ class MCRTab(BaseAnalysisTab):
         self.canvas_comp.draw()
 
         # Concentrations
-        self.ax_conc.clear()
-        for i in range(k):
-            self.ax_conc.plot(
-                np.arange(n), C[:, i],
-                marker='o', linestyle='', label=f"Comp {i+1}"
-            )
-        self.ax_conc.set_xlabel("Sample index")
-        self.ax_conc.set_ylabel("Estimated fraction")
-        self.ax_conc.set_title("MCR-ALS concentrations")
-        self.ax_conc.legend(fontsize=8)
-        self.ax_conc.grid(True, which="both", alpha=0.5, linewidth=0.8)
-        self.canvas_conc.draw()
+        C_std = stability_summary.C_std if stability_summary is not None else None
+        self._plot_mcr_concentrations(C, C_std=C_std, closure=closure)
 
         self.draw_errors(rmse_ps, resid_mean, "MCR-ALS", k)
 
@@ -1554,6 +2024,16 @@ class MCRTab(BaseAnalysisTab):
             resid_mean=resid_mean,
             energy=e,
             indices=idx_sel,
+            diagnostics=diagnostics,
+            component_bounds=component_bounds,
+            closure=closure,
+            random_seed=random_seed if init_choice == "random" else None,
+            stability=stability_summary,
+            C_stability_std=stability_summary.C_std if stability_summary is not None else None,
+            C_stability_mean=stability_summary.C_mean if stability_summary is not None else None,
+            stability_runs=stability_summary.n_runs if stability_summary is not None else None,
+            stability_first_seed=int(self.spin_stability_seed.value()) if stability_summary is not None else None,
+            stability_perturbation=float(self.spin_stability_perturb.value()) if stability_summary is not None else None,
         )
 
     def export_results(self):
@@ -1565,7 +2045,7 @@ class MCRTab(BaseAnalysisTab):
             self,
             "Export MCR-ALS results",
             "Select what to export:",
-            ["Components", "Fractions", "RMS errors"],
+            ["Components", "Fractions", "Stability σ(C)", "RMS errors"],
             0,
             False,
         )
@@ -1604,6 +2084,22 @@ class MCRTab(BaseAnalysisTab):
                 data[f"Comp{j+1}"] = C[:, j]
             df = pd.DataFrame(data)
             self._save_dataframe(df, "mcr_fractions.csv", "Export MCR-ALS fractions")
+
+        elif option == "Stability σ(C)":
+            C_std = self.results.get("C_stability_std")
+            indices = self.results.get("indices")
+            if C_std is None or indices is None:
+                QMessageBox.warning(self, "No stability data", "Run MCR-ALS with Estimate local stability enabled first.")
+                return
+            labels = [self.model.sample_labels[i] for i in indices]
+            data = {
+                "SampleIndex": indices,
+                "SampleLabel": labels,
+            }
+            for j in range(C_std.shape[1]):
+                data[f"Comp{j+1}_sigma"] = C_std[:, j]
+            df = pd.DataFrame(data)
+            self._save_dataframe(df, "mcr_stability_sigma.csv", "Export MCR-ALS stability σ(C)")
 
         elif option == "RMS errors":
             rmse_ps = self.results.get("rmse_ps")

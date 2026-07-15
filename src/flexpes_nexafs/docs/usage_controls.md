@@ -362,7 +362,6 @@ The transfer is blocked unless:
 
 **See also (How to):** *Send curves to PCA / decomposition window*
 
-
 ### Clear Plotted
 Removes all curves from Plotted Data without changing Raw/Processed selections.
 

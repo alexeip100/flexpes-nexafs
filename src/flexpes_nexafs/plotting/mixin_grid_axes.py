@@ -4,8 +4,12 @@ from matplotlib.ticker import AutoMinorLocator
 
 
 class GridAxesMixin:
-    def on_grid_toggled(self, index):
-        """Handle change of grid density from combo box."""
+    def on_grid_toggled(self, index=None):
+        """Handle change of grid density from combo box.
+
+        ``index`` is optional because the default grid setting is also applied
+        programmatically during UI setup, before any Qt signal supplies an index.
+        """
         try:
             self._apply_grid_mode()
         except Exception:

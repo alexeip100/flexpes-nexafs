@@ -26,6 +26,36 @@ def _read_help_markdown(md_filename: str = "help.md"):
     except Exception:
         return None
 
+
+def _format_changelog_subheading_html(title: str) -> str:
+    """Return compact HTML for small changelog labels such as Added/Fixed/Changed."""
+    import html
+
+    safe = html.escape(str(title or "").strip())
+    if not safe:
+        return ""
+    return (
+        '<div class="changelog-subheading" '
+        'style="margin:10px 0 4px 0; padding:3px 8px; '
+        'border-left:4px solid #8a8a8a; background-color:#f2f2f2; '
+        'font-weight:bold;">'
+        f'{safe}</div>'
+    )
+
+
+def _style_whats_new_html(html_text: str) -> str:
+    """Normalize What's New subsection headings across markdown/fallback renderers."""
+    import re
+
+    def repl(match):
+        title = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        return _format_changelog_subheading_html(title)
+
+    styled = re.sub(r"<h4[^>]*>(.*?)</h4>", repl, html_text or "", flags=re.I | re.S)
+    styled = re.sub(r"<h5[^>]*>(.*?)</h5>", repl, styled, flags=re.I | re.S)
+    styled = re.sub(r"<h6[^>]*>(.*?)</h6>", repl, styled, flags=re.I | re.S)
+    return styled
+
 def _basic_md_to_html(md: str) -> str:
     """Very small Markdown->HTML fallback.
 
@@ -112,7 +142,7 @@ def _basic_md_to_html(md: str) -> str:
 
 # Headings
 
-        if line.startswith("# ") or line.startswith("## ") or line.startswith("### "):
+        if any(line.startswith("#" * level + " ") for level in range(1, 7)):
 
             flush_para()
 
@@ -124,27 +154,24 @@ def _basic_md_to_html(md: str) -> str:
 
                 lines_out.append("</ol>"); in_ol = False
 
-            if line.startswith("# "):
+            level = 1
+            while level < len(line) and line[level] == "#":
+                level += 1
+            _title = line[level + 1:].strip()
 
-                _title = line[2:].strip()
+            if level in (1, 2):
                 _id = _slugify(_title)
                 _used_ids[_id] = _used_ids.get(_id, 0) + 1
                 if _used_ids[_id] > 1:
                     _id = f"{_id}-{_used_ids[_id]}"
-                lines_out.append(f'<h1 id="{_id}">{_title}</h1>')
-
-            elif line.startswith("## "):
-
-                _title = line[3:].strip()
-                _id = _slugify(_title)
-                _used_ids[_id] = _used_ids.get(_id, 0) + 1
-                if _used_ids[_id] > 1:
-                    _id = f"{_id}-{_used_ids[_id]}"
-                lines_out.append(f'<h2 id="{_id}">{_title}</h2>')
-
+                lines_out.append(f'<h{level} id="{_id}">{_title}</h{level}>')
+            elif level == 3:
+                lines_out.append(f"<h3>{_title}</h3>")
             else:
-
-                lines_out.append(f"<h3>{line[4:].strip()}</h3>")
+                # Higher-level headings are mostly used by What's New subsection
+                # labels (Added/Fixed/Changed). Render them explicitly so the
+                # fallback viewer never shows raw '####' markdown markers.
+                lines_out.append(_format_changelog_subheading_html(_title))
 
             continue
 
@@ -358,4 +385,5 @@ def get_whats_new_payload(current_version: str, max_versions: int = 5) -> tuple[
         html = markdown.markdown(md, extensions=["tables","fenced_code","sane_lists","toc"])  # type: ignore
     except Exception:
         html = _basic_md_to_html(md)
+    html = _style_whats_new_html(html)
     return html, latest

@@ -288,6 +288,10 @@ class RawPlotMixin:
                         self.data_tabs.setCurrentIndex(2)
                     except Exception:
                         pass
+                    try:
+                        self._apply_grid_mode()
+                    except Exception:
+                        pass
                     self.update_legend()
 
                 if skipped and added == 0:
@@ -455,6 +459,10 @@ class RawPlotMixin:
             self.plotted_list.addItem(item)
 
         self.data_tabs.setCurrentIndex(2)
+        try:
+            self._apply_grid_mode()
+        except Exception:
+            pass
         self.update_legend()
         if self.chk_sum.isChecked():
             self._sum_serial = getattr(self, "_sum_serial", 0) + 1
@@ -538,6 +546,10 @@ class RawPlotMixin:
         # Ensure Plotted Data tab is visible and legend updated
         try:
             self.data_tabs.setCurrentIndex(2)
+        except Exception:
+            pass
+        try:
+            self._apply_grid_mode()
         except Exception:
             pass
         try:

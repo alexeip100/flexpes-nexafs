@@ -5,6 +5,24 @@
 
 ---
 
+## [2.4.2] – 2026-07-01
+
+### Added
+- MCR-ALS: optional component fraction bounds can now be set per component in %, with Closure required.
+- MCR-ALS: bound diagnostics report when constraints are active and warn about possible over-constraint.
+- MCR-ALS: random initialization now has a reproducible Seed control.
+- MCR-ALS: optional local stability band estimates run-to-run σ(C) from perturbed initial guesses.
+
+### Fixed
+- The default grid now appears immediately in **Plotted Data** after the first **Group BG → Pass** operation in a newly opened app.
+- MCR-ALS: full-range component bounds (0–100%) now leave the fit unchanged.
+- MCR-ALS: the stability band can now be shown or hidden after a run without recalculation.
+
+### Changed
+- MCR-ALS controls were reorganized into a clearer layout with a right-side constraints/diagnostics panel and shorter tooltips.
+- MCR-ALS: the component-bounds table is now more compact and the Run button shows a busy indicator while calculations are active.
+- Improved the visual formatting of **Help → What’s new** section headings.
+
 ## [2.4.1] – 2026-06-30
 
 ### Added
