@@ -5,6 +5,21 @@
 
 ---
 
+## [2.4.3] – 2026-08-27
+
+### Added
+- Added a visible activity indicator below the **HDF5 Structure** tree while HDF5 files or grouped channel data are being loaded/updated.
+- New HDF5 files, including recursive channel discovery for **All in channel**, are scanned in a separate background process so slow local or network HDF5 access does not block the main GUI.
+- Added the FlexPES XAS application icon to the main window/application.
+
+### Fixed
+- **Plotted Data → Reset original view** now returns to the full range of the currently plotted spectra instead of sometimes restoring an older energy range.
+
+### Changed
+- **Clear Plotted** now asks for confirmation before removing all plotted curves.
+- GUI font sizing is now consistent with the FlexPES PES application.
+- **Help → What is what?** and **How to?** have improved presentation and a clearer, more coherent organization while retaining the existing documentation content and workflow.
+
 ## [2.4.2] – 2026-07-01
 
 ### Added

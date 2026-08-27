@@ -29,8 +29,39 @@ from .ui_treeviews import TreeViewMixin
 from .export import ExportMixin
 from .library import LibraryMixin
 from .channel_setup import ChannelConfigManager, ChannelSetupDialog
+from .widgets.busy_spinner import BusySpinner
 import re
 class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, ExportMixin, LibraryMixin, QMainWindow):
+
+    def _begin_busy(self, message: str = "Working..."):
+        """Show the file-panel activity indicator and allow Qt to repaint it."""
+        self._busy_depth = int(getattr(self, "_busy_depth", 0)) + 1
+        try:
+            self.busy_label.setText(str(message or "Working..."))
+            self.busy_row_widget.show()
+            self.busy_spinner.start()
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+    def _set_busy_message(self, message: str):
+        try:
+            self.busy_label.setText(str(message or "Working..."))
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+    def _end_busy(self):
+        """Hide the activity indicator when the outermost busy operation finishes."""
+        self._busy_depth = max(0, int(getattr(self, "_busy_depth", 1)) - 1)
+        if self._busy_depth:
+            return
+        try:
+            self.busy_spinner.stop()
+            self.busy_row_widget.hide()
+            QApplication.processEvents()
+        except Exception:
+            pass
 
     def on_plotted_list_reordered(self):
         """After drag-drop: recompute Waterfall using list order, rebuild legend, redraw."""
@@ -179,6 +210,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
             pattern = ""
         if not pattern:
             return
+        self._begin_busy(("Loading" if checked else "Clearing") + f" {role} data...")
         try:
             # When enabling: tag as a role source so it can coexist with "All in channel".
             if checked:
@@ -188,6 +220,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
                 self.clear_group_visibility(pattern)
         except Exception:
             pass
+        finally:
+            self._end_busy()
 
 
     def _apply_basic_tooltips(self):
@@ -290,6 +324,10 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FlexPES NEXAFS Plotter")
+        from .icon import application_icon
+        icon = application_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
         # Default window position/size (tuned for smaller laptop screens)
         self.setGeometry(50, 50, 1650, 800)
 
@@ -324,6 +362,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         self.CREATION_DATETIME = str(_PKG_DATE)
 
         self.hdf5_files = {}
+        self._hdf5_all_channel_cache = {}
         self.plot_data = {}      # Keys: "abs_path##hdf5_path"
         self.energy_cache = {}
 
@@ -466,6 +505,21 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         except Exception:
             pass
         self.left_panel.addWidget(self.tree)
+
+        # Activity feedback for file/group loading. Kept below the file tree so the
+        # already crowded controls above the tree remain unchanged.
+        self.busy_row_widget = QWidget()
+        self.busy_row_layout = QHBoxLayout(self.busy_row_widget)
+        self.busy_row_layout.setContentsMargins(2, 2, 2, 2)
+        self.busy_row_layout.setSpacing(7)
+        self.busy_spinner = BusySpinner(self.busy_row_widget, diameter=26, line_width=3)
+        self.busy_label = QLabel("Working...")
+        self.busy_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.busy_row_layout.addWidget(self.busy_spinner)
+        self.busy_row_layout.addWidget(self.busy_label)
+        self.busy_row_widget.setFixedHeight(34)
+        self.busy_row_widget.hide()
+        self.left_panel.addWidget(self.busy_row_widget)
 
         # Right panel: tab widget
         self.right_panel_widget = QWidget()
@@ -818,7 +872,7 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
         self.plot_buttons_layout.addWidget(self.pca_plotted_button)
 
         self.clear_plotted_data_button = QPushButton("Clear Plotted")
-        self.clear_plotted_data_button.clicked.connect(self.clear_plotted_data)
+        self.clear_plotted_data_button.clicked.connect(self.confirm_clear_plotted_data)
         self.clear_plotted_data_button.setMaximumWidth(150)
         self.plot_buttons_layout.addWidget(self.clear_plotted_data_button)
 # ---
@@ -933,20 +987,37 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
 
 
     def _refresh_all_in_channel_combo(self):
-        """
-        Populate the 'All in channel' combobox with unique channel names (last path component)
-        collected from all currently opened HDF5 files. Keeps selection stable and avoids
-        re-entrant side effects by blocking signals during the update.
+        """Refresh the 'All in channel' combobox without re-reading cached files.
+
+        Newly loaded HDF5 files are scanned recursively in the background
+        helper process.  Their channel names are cached in
+        ``_hdf5_all_channel_cache`` so this GUI-thread method does not reopen
+        large/network HDF5 files.  A synchronous fallback is retained only for
+        legacy/refreshed files that do not yet have cached channel metadata.
         """
         try:
             combo = getattr(self, "combo_all_channel", None)
             if combo is None:
                 return
 
-            # --- gather all 1D dataset relpaths from currently opened files ---
-            rels = set()
+            channels_set = set()
             files = list(getattr(self, "hdf5_files", {}).keys()) if hasattr(self, "hdf5_files") else []
+            cache = getattr(self, "_hdf5_all_channel_cache", {})
+            if not isinstance(cache, dict):
+                cache = {}
+
+            missing = []
             for abs_path in files:
+                cached = cache.get(abs_path)
+                if cached is None:
+                    missing.append(abs_path)
+                else:
+                    channels_set.update(str(ch) for ch in cached if str(ch))
+
+            # Compatibility fallback for files loaded through older/synchronous
+            # paths (not used for normal new-file loading).
+            for abs_path in missing:
+                found = set()
                 try:
                     with self._open_h5_read(abs_path) as f:
                         def _visit(name, obj):
@@ -955,30 +1026,23 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
                                 if isinstance(obj, h5py.Dataset):
                                     shp = tuple(getattr(obj, "shape", ()) or ())
                                     if len(shp) == 1 and getattr(obj, "size", 0) > 0:
-                                        rels.add(name.lstrip("/"))
+                                        ch = str(name).lstrip("/").split("/")[-1]
+                                        if ch:
+                                            found.add(ch)
                             except Exception:
                                 pass
                         f.visititems(_visit)
                 except Exception:
-                    # ignore unreadable files; continue with others
                     pass
+                cache[abs_path] = sorted(found, key=str.lower)
+                channels_set.update(found)
+            self._hdf5_all_channel_cache = cache
 
-            # --- turn relpaths into unique channel names (last path component) ---
-            channels, seen = [], set()
-            for s in sorted(rels, key=lambda x: x.lower() if isinstance(x, str) else str(x)):
-                if not isinstance(s, str):
-                    continue
-                ch = s.split("/")[-1]
-                if ch and ch not in seen:
-                    seen.add(ch)
-                    channels.append(ch)
-
-            # --- no-op if items haven't changed (prevents snap-back) ---
+            channels = sorted(channels_set, key=str.lower)
             current = [combo.itemText(i) for i in range(combo.count())]
             if current == channels:
                 return
 
-            # Preserve user's intended selection if available
             desired = getattr(self, "_desired_all_channel_selection", None)
             prev_text = combo.currentText() if combo.count() else None
 
@@ -986,7 +1050,6 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
             combo.clear()
             if channels:
                 combo.addItems(channels)
-                # Prefer desired, then previous text; otherwise leave the default (index 0)
                 if isinstance(desired, str) and desired in channels:
                     combo.setCurrentText(desired)
                 elif isinstance(prev_text, str) and prev_text in channels:
@@ -994,7 +1057,6 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
             combo.blockSignals(False)
 
         except Exception:
-            # Best-effort cleanup
             try:
                 self.combo_all_channel.blockSignals(False)
             except Exception:
@@ -1033,6 +1095,8 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
                 if getattr(self, "_in_all_channel_apply", False):
                     return
                 self._in_all_channel_apply = True
+                busy_name = selected or "channel"
+                self._begin_busy(("Loading" if checked else "Clearing") + f" {busy_name} data...")
 
                 if checked:
 # Load only the selected channel; clear previous active (for this feature only) if different
@@ -1087,6 +1151,10 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
             finally:
 # Allow pending timers to refresh safely now that we're done applying
                 self._in_all_channel_apply = False
+                try:
+                    self._end_busy()
+                except Exception:
+                    pass
     def _on_tree_context_menu(self, pos):
         """Context menu handler for closing an individual HDF5 file from the main tree."""
         try:
@@ -1186,10 +1254,6 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
             if event.type() in (QEvent.DragEnter, QEvent.DragMove):
                 if has_hdf5_paths:
                     event.acceptProposedAction()
-                    try:
-                        self.statusBar().showMessage("Drop HDF5 file(s) to load", 3000)
-                    except Exception:
-                        pass
                     return True
                 event.ignore()
                 return True
@@ -1197,10 +1261,6 @@ class HDF5Viewer(DataMixin, ProcessingMixin, TreeViewMixin, PlottingMixin, Expor
             if event.type() == QEvent.Drop:
                 if has_local_paths and has_hdf5_paths:
                     event.acceptProposedAction()
-                    try:
-                        self.statusBar().showMessage("Loading dropped HDF5 file(s)...", 3000)
-                    except Exception:
-                        pass
                     try:
                         if hasattr(self, "load_hdf5_paths"):
                             self.load_hdf5_paths(paths, source="drop")

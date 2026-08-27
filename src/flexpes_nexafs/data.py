@@ -7,11 +7,16 @@ import h5py
 import numpy as np
 import re
 import logging
+import json
+import sys
 from . import hdf5_loading as h5load
 logger = logging.getLogger(__name__)
 from importlib.resources import files
 from PyQt5.QtWidgets import QApplication, QFileDialog, QTreeWidgetItem, QDialog, QMessageBox
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QProcess
+
+
+
 class DataMixin:
     def _ensure_raw_key_sources(self):
         """Ensure the raw-plot key → sources map exists.
@@ -549,9 +554,16 @@ class DataMixin:
             for abs_path in files:
                 try:
                     with self._open_h5_read(abs_path) as f:
+                        visit_counter = [0]
 
                         def _visit(name, obj):
                             try:
+                                visit_counter[0] += 1
+                                if visit_counter[0] % 25 == 0:
+                                    try:
+                                        QApplication.processEvents()
+                                    except Exception:
+                                        pass
                                 import h5py
                                 # Only 1D datasets
                                 if not isinstance(obj, h5py.Dataset):
@@ -623,6 +635,10 @@ class DataMixin:
     def close_file(self):
     # No persistent h5py.File handles are kept; just clear state
         self.hdf5_files.clear()
+        try:
+            self._hdf5_all_channel_cache.clear()
+        except Exception:
+            self._hdf5_all_channel_cache = {}
         self.file_label.setText("No file open")
         self.tree.clear()
         self.plot_data.clear()
@@ -975,6 +991,14 @@ class DataMixin:
         except Exception:
             pass
 
+        # Cached channel metadata follows the source path as well.
+        try:
+            cache = getattr(self, "_hdf5_all_channel_cache", None)
+            if isinstance(cache, dict) and old_abs_path in cache:
+                cache[new_abs_path] = cache.pop(old_abs_path)
+        except Exception:
+            pass
+
         # Raw/processed/plotted bookkeeping keyed by abs_path##hdf5_path.
         for attr in (
             "plot_data", "raw_visibility", "_raw_key_sources", "curve_display_names",
@@ -1214,17 +1238,32 @@ class DataMixin:
             pass
 
     def load_hdf5_paths(self, file_paths, source: str = "dialog") -> None:
-        """Load or refresh one or more HDF5 files using shared Open/D&D behavior."""
+        """Load/refresh HDF5 files with new-file disk I/O in a worker thread."""
         paths = list(file_paths or [])
         if not paths:
             return
 
+        # Do not start overlapping HDF5 scans.  This protects both the tree
+        # state and network-backed h5py reads while leaving the rest of the GUI
+        # responsive.
+        process = getattr(self, "_hdf5_load_process", None)
+        try:
+            if process is not None and process.state() != QProcess.NotRunning:
+                self._show_status_message("An HDF5 file is already being loaded.", 4000)
+                return
+        except Exception:
+            pass
+
+        # IMPORTANT: do not touch the filesystem from the GUI thread here.
+        # In particular, os.path.isfile()/stat() on Wi-Fi or network shares can
+        # block the Qt event loop for seconds before the worker even starts.
+        # Validate only the extension/name here; the background process is
+        # responsible for opening the file and reporting missing/unreadable paths.
         valid_paths, skipped = h5load.split_supported_hdf5_paths(
             paths,
             dedupe_by_basename=True,
-            require_exists=True,
+            require_exists=False,
         )
-
         if not valid_paths:
             if skipped:
                 QMessageBox.warning(
@@ -1243,6 +1282,9 @@ class DataMixin:
             else:
                 new_paths.append(abs_path)
 
+        # Refresh keeps existing expanded/check-state structure.  Keep that
+        # established path synchronous for now; only genuinely new file I/O is
+        # moved to the worker thread in this conservative first step.
         refresh_duplicates = False
         if duplicates:
             try:
@@ -1263,34 +1305,172 @@ class DataMixin:
                 refresh_duplicates = False
 
         failures = []
-        loaded_count = 0
         refreshed_count = 0
-
-        if new_paths:
-            # Preserve the previous Open-HDF5 behavior for genuinely new files.
-            try:
-                self.region_states.clear()
-                self.proc_region_states.clear()
-            except Exception:
-                pass
-
         if refresh_duplicates:
-            for existing_abs, new_abs in duplicates:
+            try:
+                if hasattr(self, "_begin_busy"):
+                    self._begin_busy("Refreshing HDF5 file..." if len(duplicates) == 1 else "Refreshing HDF5 files...")
+                for existing_abs, new_abs in duplicates:
+                    try:
+                        if hasattr(self, "_set_busy_message"):
+                            self._set_busy_message(f"Refreshing {os.path.basename(new_abs)}...")
+                        self.refresh_hdf5_file(existing_abs, new_abs)
+                        refreshed_count += 1
+                    except Exception as exc:
+                        failures.append(f"{os.path.basename(new_abs)}: {exc}")
+            finally:
                 try:
-                    self.refresh_hdf5_file(existing_abs, new_abs)
-                    refreshed_count += 1
-                except Exception as exc:
-                    failures.append(f"{os.path.basename(new_abs)}: {exc}")
+                    if hasattr(self, "_end_busy"):
+                        self._end_busy()
+                except Exception:
+                    pass
         elif duplicates:
             skipped.extend(os.path.basename(new_abs) for _existing_abs, new_abs in duplicates)
 
-        for abs_path in new_paths:
-            try:
-                self.load_hdf5_file(abs_path)
-                loaded_count += 1
-            except Exception as exc:
-                failures.append(f"{os.path.basename(abs_path)}: {exc}")
+        if failures:
+            QMessageBox.critical(
+                self,
+                "HDF5 loading failed",
+                "Some HDF5 files could not be refreshed.\n\n" + "\n".join(failures),
+            )
+        if skipped:
+            QMessageBox.warning(
+                self,
+                "Skipped files",
+                "Some files were not loaded.\n\nSkipped:\n" + "\n".join(skipped),
+            )
 
+        if refreshed_count:
+            self._show_status_message(f"HDF5 file(s) refreshed {refreshed_count}", 5000)
+
+        if not new_paths:
+            return
+
+        try:
+            self.region_states.clear()
+            self.proc_region_states.clear()
+        except Exception:
+            pass
+
+        self._hdf5_async_failures = []
+        self._hdf5_async_loaded_count = 0
+        self._hdf5_process_stdout_buffer = ""
+        self._hdf5_process_paths = list(new_paths)
+        if hasattr(self, "_begin_busy"):
+            first_name = os.path.basename(new_paths[0]) if len(new_paths) == 1 else "HDF5 files"
+            self._begin_busy(f"Loading {first_name}...")
+
+        # Use a separate process rather than QThread. Native HDF5/h5py calls can
+        # block hard enough (especially on network storage) that a Python/Qt
+        # worker thread still starves the GUI event loop. QProcess gives the
+        # loader its own interpreter and native HDF5 state.
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.SeparateChannels)
+        process.readyReadStandardOutput.connect(self._read_hdf5_process_stdout)
+        process.readyReadStandardError.connect(self._read_hdf5_process_stderr)
+        process.finished.connect(self._finish_hdf5_process_load)
+        process.errorOccurred.connect(self._hdf5_process_error)
+        self._hdf5_load_process = process
+
+        # Defer process launch until Qt has returned to the event loop once.
+        # This lets the busy row paint immediately and avoids doing even process
+        # startup work in the same callback that handled the file selection/drop.
+        worker_args = ["-m", "flexpes_nexafs.hdf5_worker", *new_paths]
+        QTimer.singleShot(0, lambda p=process, a=worker_args: p.start(sys.executable, a))
+
+    def _record_hdf5_async_failure(self, abs_path, message):
+        self._hdf5_async_failures = list(getattr(self, "_hdf5_async_failures", []))
+        self._hdf5_async_failures.append(f"{os.path.basename(str(abs_path))}: {message}")
+
+    def _apply_loaded_hdf5_payload(self, payload):
+        """Apply worker-produced plain metadata to Qt widgets in the GUI thread."""
+        abs_path = os.path.abspath(str(payload.get("abs_path", "")))
+        if not abs_path:
+            return
+        tree = getattr(self, "tree", None)
+        try:
+            if tree is not None:
+                tree.blockSignals(True)
+            self.hdf5_files[abs_path] = True
+            file_item = QTreeWidgetItem([os.path.basename(abs_path)])
+            file_item.setData(0, Qt.UserRole, h5load.make_tree_payload(abs_path, ""))
+
+            for desc in payload.get("root_children", []) or []:
+                name = str(desc.get("name", ""))
+                hdf5_path = str(desc.get("path", name))
+                child_item = QTreeWidgetItem([name])
+                child_item.setData(0, Qt.UserRole, h5load.make_tree_payload(abs_path, hdf5_path))
+                if desc.get("kind") == "group" and desc.get("has_children"):
+                    child_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                    child_item.addChild(QTreeWidgetItem(["(click to expand)"]))
+                elif desc.get("kind") == "dataset" and desc.get("is_1d_dataset"):
+                    key = f"{abs_path}##{hdf5_path}"
+                    state = Qt.Checked if getattr(self, "raw_visibility", {}).get(key, False) else Qt.Unchecked
+                    child_item.setCheckState(0, state)
+                file_item.addChild(child_item)
+
+            self.tree.addTopLevelItem(file_item)
+            file_item.setExpanded(True)
+        finally:
+            try:
+                if tree is not None:
+                    tree.blockSignals(False)
+            except Exception:
+                pass
+
+        self._apply_norm_channels(payload.get("norm_channels", []) or [])
+
+        # Cache the recursive 1-D channel scan produced by the worker.  The
+        # previous implementation re-opened and recursively traversed the HDF5
+        # file from _refresh_all_in_channel_combo() in the GUI thread, which
+        # could freeze the application for the entire duration on network files.
+        try:
+            cache = getattr(self, "_hdf5_all_channel_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._hdf5_all_channel_cache = cache
+            cache[abs_path] = list(payload.get("all_channels", []) or [])
+            QTimer.singleShot(0, getattr(self, "_refresh_all_in_channel_combo", lambda: None))
+        except Exception:
+            pass
+        self._hdf5_async_loaded_count = int(getattr(self, "_hdf5_async_loaded_count", 0)) + 1
+
+    def _apply_norm_channels(self, channel_names):
+        """Populate the normalization combo from worker-scanned channel names."""
+        try:
+            self.combo_norm.clear()
+            for name in channel_names or []:
+                self.combo_norm.addItem(str(name))
+        except Exception:
+            return
+
+        default_candidates = ["b107a_em_03_ch2", "b107a_em_04_ch2", "Pt_No"]
+        try:
+            cc = getattr(self, "channel_config", None)
+            if cc is not None:
+                cands = cc.get_candidates("I0")
+                if cands:
+                    default_candidates = list(cands)
+        except Exception:
+            pass
+
+        for cand in default_candidates:
+            cand = str(cand).strip()
+            if not cand:
+                continue
+            idx = self.combo_norm.findText(cand)
+            if idx != -1:
+                self.combo_norm.setCurrentIndex(idx)
+                return
+        for i in range(self.combo_norm.count()):
+            txt = str(self.combo_norm.itemText(i))
+            for cand in default_candidates:
+                cand = str(cand).strip()
+                if cand and cand in txt:
+                    self.combo_norm.setCurrentIndex(i)
+                    return
+
+    def _finish_hdf5_async_load(self):
         try:
             self.combo_poly.setCurrentIndex(2)
         except Exception:
@@ -1299,28 +1479,85 @@ class DataMixin:
             self.update_file_label()
         except Exception:
             pass
+        try:
+            if hasattr(self, "_end_busy"):
+                self._end_busy()
+        except Exception:
+            pass
 
-        if skipped:
-            QMessageBox.warning(
-                self,
-                "Skipped files",
-                "Some files were not loaded.\n\nSkipped:\n" + "\n".join(skipped),
-            )
-
+        failures = list(getattr(self, "_hdf5_async_failures", []))
+        loaded_count = int(getattr(self, "_hdf5_async_loaded_count", 0))
         if failures:
             QMessageBox.critical(
                 self,
                 "HDF5 loading failed",
-                "Some HDF5 files could not be loaded/refreshed.\n\n" + "\n".join(failures),
+                "Some HDF5 files could not be loaded.\n\n" + "\n".join(failures),
             )
+        if loaded_count:
+            self._show_status_message(f"HDF5 file(s) loaded {loaded_count}", 5000)
 
-        if loaded_count or refreshed_count:
-            parts = []
-            if loaded_count:
-                parts.append(f"loaded {loaded_count}")
-            if refreshed_count:
-                parts.append(f"refreshed {refreshed_count}")
-            self._show_status_message("HDF5 file(s) " + ", ".join(parts), 5000)
+    def _read_hdf5_process_stdout(self):
+        process = getattr(self, "_hdf5_load_process", None)
+        if process is None:
+            return
+        try:
+            chunk = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        except Exception:
+            return
+        self._hdf5_process_stdout_buffer = str(getattr(self, "_hdf5_process_stdout_buffer", "")) + chunk
+        while "\n" in self._hdf5_process_stdout_buffer:
+            line, self._hdf5_process_stdout_buffer = self._hdf5_process_stdout_buffer.split("\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            kind = str(event.get("type", ""))
+            if kind == "progress":
+                if hasattr(self, "_set_busy_message"):
+                    self._set_busy_message(str(event.get("message", "Loading HDF5 file...")))
+            elif kind == "file_ready":
+                self._apply_loaded_hdf5_payload(event.get("payload", {}) or {})
+            elif kind == "file_failed":
+                self._record_hdf5_async_failure(str(event.get("path", "")), str(event.get("message", "Unknown error")))
+
+    def _read_hdf5_process_stderr(self):
+        process = getattr(self, "_hdf5_load_process", None)
+        if process is None:
+            return
+        try:
+            chunk = bytes(process.readAllStandardError()).decode("utf-8", errors="replace").strip()
+        except Exception:
+            chunk = ""
+        if chunk:
+            logger.warning("HDF5 loader process: %s", chunk)
+            self._hdf5_process_last_stderr = chunk
+
+    def _hdf5_process_error(self, _error):
+        process = getattr(self, "_hdf5_load_process", None)
+        if process is None:
+            return
+        try:
+            if process.state() == QProcess.NotRunning and not getattr(self, "_hdf5_async_loaded_count", 0):
+                msg = str(getattr(self, "_hdf5_process_last_stderr", "")).strip() or process.errorString()
+                if msg:
+                    self._record_hdf5_async_failure("loader process", msg)
+        except Exception:
+            pass
+
+    def _finish_hdf5_process_load(self, _exit_code=0, _exit_status=None):
+        # Drain any final output before closing the busy state.
+        self._read_hdf5_process_stdout()
+        self._read_hdf5_process_stderr()
+        self._finish_hdf5_async_load()
+        process = getattr(self, "_hdf5_load_process", None)
+        if process is not None:
+            process.deleteLater()
+        self._hdf5_load_process = None
+        self._hdf5_process_paths = []
+        self._hdf5_process_stdout_buffer = ""
 
     def open_file(self):
         dialog = QFileDialog(self, "Open HDF5 File(s)")

@@ -32,6 +32,11 @@ def main():
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
 
+    from .icon import application_icon
+    icon = application_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
+
 # Import the main UI only after a QApplication exists.
     from .ui import MainWindow
 
@@ -47,12 +52,18 @@ def main():
     except Exception:
         pass
 
-# Keep the 1920x1080 look as the visual baseline across screens.
-# Preserve the system-selected font family, but force the known-good
-# application font size measured on the reference 1920x1080 setup.
+# Match the GUI font sizing used in flexpes_pes.
+# Preserve the system-selected font family and increase the default Qt
+# application font by two points, with a pixel-size fallback.
     try:
         f = app.font()
-        f.setPointSizeF(10.25)
+        ps = int(f.pointSize())
+        if ps > 0:
+            f.setPointSize(ps + 2)
+        else:
+            px = int(f.pixelSize())
+            if px > 0:
+                f.setPixelSize(px + 2)
         app.setFont(f)
     except Exception:
         pass

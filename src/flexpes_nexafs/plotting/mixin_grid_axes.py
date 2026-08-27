@@ -104,4 +104,14 @@ class GridAxesMixin:
             except Exception:
                 pass
             self.canvas_plotted_fig.tight_layout()
+            # Keep Matplotlib's Home/"Reset original view" target in sync
+            # with the current full-data limits. Otherwise the toolbar may
+            # restore a stale range from a previously plotted energy region.
+            try:
+                toolbar = getattr(self, "toolbar_plotted", None)
+                if toolbar is not None:
+                    toolbar.update()
+                    toolbar.push_current()
+            except Exception:
+                pass
             self.canvas_plotted.draw()

@@ -1,22 +1,21 @@
-"""Utilities for loading and rendering packaged help/usage text.
+"""Utilities for loading and rendering packaged help text.
 
-Help files are shipped under docs/ (e.g. usage_controls.md, usage_workflows.md).
+Help files are shipped under docs/ (for example usage_controls.md).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 
-def _pkg_root_path():
+def _pkg_root_path() -> Path | None:
     try:
-        from pathlib import Path
         return Path(__file__).resolve().parent.parent
     except Exception:
         return None
 
-def _read_help_markdown(md_filename: str = "help.md"):
+
+def _read_help_markdown(md_filename: str = "usage_controls.md") -> str | None:
     root = _pkg_root_path()
     if not root:
         return None
@@ -56,197 +55,262 @@ def _style_whats_new_html(html_text: str) -> str:
     styled = re.sub(r"<h6[^>]*>(.*?)</h6>", repl, styled, flags=re.I | re.S)
     return styled
 
+
 def _basic_md_to_html(md: str) -> str:
-    """Very small Markdown->HTML fallback.
+    """Small Markdown-to-HTML fallback used if the markdown package is absent.
 
-    This version is careful not to treat every single line break in the
-    source file as a separate paragraph. Instead, consecutive non-empty
-    lines that are not list items or headings are merged into one
-    paragraph, so that soft-wrapped text from the editor behaves like a
-    normal flowing paragraph in the help window.
-
-    It supports:
-      - #, ##, ### headings
-      - unordered lists starting with "- " or "* "
-      - ordered lists starting with "1. ", "2. ", ... "9. "
-      - **bold**, *italic*, and `inline code`
+    It supports headings, unordered/ordered lists, simple paragraphs, bold,
+    italic, and inline code. It also adds ids to H1/H2 headings for the TOC.
     """
-
-    import html, re
-
-# Escape HTML first, then re-introduce simple formatting
+    import html
+    import re
 
     text = html.escape(md)
-
-# inline code
-
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
-
-# bold / italic
-
     text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
-
     text = re.sub(r"\*([^*]+)\*", r"<i>\1</i>", text)
-
-# Now process line-by-line with simple block structure
-
-    import re as _re
-
+    text = re.sub(r"\[([^]]+)\]\((#[^)]+)\)", r'<a href="\2">\1</a>', text)
 
     def _slugify(s: str) -> str:
-
         s = (s or "").strip().lower()
-
-        s = _re.sub(r"[\s_]+", "-", s)
-
-        s = _re.sub(r"[^a-z0-9\-]+", "", s)
-
-        s = _re.sub(r"-{2,}", "-", s).strip("-")
-
+        s = re.sub(r"[\s_]+", "-", s)
+        s = re.sub(r"[^a-z0-9\-]+", "", s)
+        s = re.sub(r"-{2,}", "-", s).strip("-")
         return s or "section"
 
-
-    _used_ids = {}
-
-    lines_out = []
-
+    used_ids: dict[str, int] = {}
+    out: list[str] = []
+    para: list[str] = []
     in_ul = False
-
     in_ol = False
 
-    para_buf = []  # accumulate plain paragraph lines
-
-    def flush_para():
-
-        nonlocal para_buf
-
-        if para_buf:
-
-# Join soft-wrapped lines with spaces into one logical paragraph
-
-            lines_out.append(f"<p>{' '.join(para_buf).strip()}</p>")
-
-            para_buf = []
+    def flush_para() -> None:
+        nonlocal para
+        if para:
+            out.append(f"<p>{' '.join(para).strip()}</p>")
+            para = []
 
     for raw in text.splitlines():
-
         line = raw.strip()
-
         if not line:
-
-# Blank line: end any running paragraph, leave lists open
-
             flush_para()
-
             continue
 
-# Headings
-
-        if any(line.startswith("#" * level + " ") for level in range(1, 7)):
-
+        if line.startswith("# ") or line.startswith("## ") or line.startswith("### ") or line.startswith("#### "):
             flush_para()
-
             if in_ul:
-
-                lines_out.append("</ul>"); in_ul = False
-
+                out.append("</ul>"); in_ul = False
             if in_ol:
-
-                lines_out.append("</ol>"); in_ol = False
-
-            level = 1
-            while level < len(line) and line[level] == "#":
-                level += 1
-            _title = line[level + 1:].strip()
-
-            if level in (1, 2):
-                _id = _slugify(_title)
-                _used_ids[_id] = _used_ids.get(_id, 0) + 1
-                if _used_ids[_id] > 1:
-                    _id = f"{_id}-{_used_ids[_id]}"
-                lines_out.append(f'<h{level} id="{_id}">{_title}</h{level}>')
-            elif level == 3:
-                lines_out.append(f"<h3>{_title}</h3>")
+                out.append("</ol>"); in_ol = False
+            if line.startswith("# "):
+                level, title = 1, line[2:].strip()
+            elif line.startswith("## "):
+                level, title = 2, line[3:].strip()
+            elif line.startswith("### "):
+                level, title = 3, line[4:].strip()
             else:
-                # Higher-level headings are mostly used by What's New subsection
-                # labels (Added/Fixed/Changed). Render them explicitly so the
-                # fallback viewer never shows raw '####' markdown markers.
-                lines_out.append(_format_changelog_subheading_html(_title))
-
+                level, title = 4, line[5:].strip()
+            anchor = _slugify(title)
+            used_ids[anchor] = used_ids.get(anchor, 0) + 1
+            if used_ids[anchor] > 1:
+                anchor = f"{anchor}-{used_ids[anchor]}"
+            out.append(f'<h{level} id="{anchor}">{title}</h{level}>')
             continue
 
-# Unordered list item
+        if line in {"---", "***", "___"}:
+            flush_para()
+            if in_ul:
+                out.append("</ul>"); in_ul = False
+            if in_ol:
+                out.append("</ol>"); in_ol = False
+            out.append("<hr>")
+            continue
+
+        if line.startswith("&gt; "):
+            flush_para()
+            if in_ul:
+                out.append("</ul>"); in_ul = False
+            if in_ol:
+                out.append("</ol>"); in_ol = False
+            out.append(f"<blockquote>{line[5:].strip()}</blockquote>")
+            continue
 
         if line.startswith("- ") or line.startswith("* "):
-
             flush_para()
-
             if in_ol:
-
-                lines_out.append("</ol>"); in_ol = False
-
+                out.append("</ol>"); in_ol = False
             if not in_ul:
-
-                lines_out.append("<ul>"); in_ul = True
-
-            item = line[2:].strip()
-
-            lines_out.append(f"<li>{item}</li>")
-
+                out.append("<ul>"); in_ul = True
+            out.append(f"<li>{line[2:].strip()}</li>")
             continue
-
-# Ordered list item (1. 2. ... 9.)
 
         if any(line.startswith(f"{n}. ") for n in range(1, 10)):
-
             flush_para()
-
             if in_ul:
-
-                lines_out.append("</ul>"); in_ul = False
-
+                out.append("</ul>"); in_ul = False
             if not in_ol:
-
-                lines_out.append("<ol>"); in_ol = True
-
+                out.append("<ol>"); in_ol = True
             dot = line.find('.')
-
-            item = line[dot+1:].strip()
-
-            lines_out.append(f"<li>{item}</li>")
-
+            out.append(f"<li>{line[dot+1:].strip()}</li>")
             continue
 
-# Otherwise part of a normal paragraph: accumulate
-
-        para_buf.append(line)
-
-# Flush trailing paragraph and lists
+        para.append(line)
 
     flush_para()
-
     if in_ul:
-
-        lines_out.append("</ul>")
-
+        out.append("</ul>")
     if in_ol:
+        out.append("</ol>")
+    return "\n".join(out)
 
-        lines_out.append("</ol>")
 
-    return "\n".join(lines_out)
-def get_usage_html(md_filename: str = "help.md") -> str:
-    """Return help content as HTML from a Markdown file under docs/."""
+def _help_css(base_px: int = 17) -> str:
+    """Return shared semantic styling for both Help documents."""
+    base_px = max(8, min(28, int(base_px)))
+    # QTextBrowser may ignore style-sheet sizes on native h1-h4 tags and
+    # fall back to its much larger built-in heading scale.  These values are
+    # also injected inline below, which Qt renders reliably.
+    h1_px = min(29, max(base_px + 6, 20))
+    h2_px = min(25, max(base_px + 2, 16))
+    h3_px = min(24, max(base_px + 1, 15))
+    h4_px = min(23, max(base_px, 14))
+    css = r"""
+<style>
+body {
+  color: palette(text);
+  line-height: 1.42;
+  margin: 0.45em 0.65em 1.2em 0.65em;
+}
+h1 {
+  font-size: __H1__px;
+  font-weight: 700;
+  color: #174f82;
+  background-color: #eaf4fb;
+  margin: 3.20em 0 0.55em 0;
+  padding: 0.22em 0.38em 0.26em 0.38em;
+  border-bottom: 2px solid #6f9fc6;
+}
+h2 {
+  font-size: __H2__px;
+  font-weight: 700;
+  color: #245f91;
+  margin: 1.20em 0 0.42em 0;
+  padding: 0.12em 0 0.18em 0.42em;
+  border-left: 0.22em solid #76a7cc;
+  border-bottom: 1px solid #c4d7e7;
+}
+h3 {
+  font-size: __H3__px;
+  font-weight: 600;
+  color: #334f66;
+  margin: 0.95em 0 0.28em 0;
+  padding-left: 0.35em;
+}
+h4 {
+  font-size: __H4__px;
+  font-weight: 600;
+  color: #4c6172;
+  margin: 0.72em 0 0.22em 0;
+}
+p { margin: 0.38em 0 0.62em 0; }
+ul, ol { margin-top: 0.25em; margin-bottom: 0.68em; }
+li { margin: 0.16em 0; }
+hr { border: 0; border-top: 1px solid #cbd7e0; margin: 1.25em 0; }
+a { color: #0b66b2; text-decoration: none; font-weight: 600; }
+blockquote {
+  margin: 0.72em 0 0.82em 0;
+  padding: 0.48em 0.72em;
+  background-color: #edf5fb;
+  border-left: 0.28em solid #4f91c4;
+  color: #28485f;
+}
+code {
+  font-size: 0.94em;
+  background-color: #eef1f3;
+  padding: 0.08em 0.22em;
+}
+table {
+  border-collapse: collapse;
+  margin: 0.55em 0 0.85em 0;
+  font-size: 0.92em;
+}
+th {
+  font-weight: 700;
+  background-color: #e8f0f6;
+}
+th, td {
+  border: 1px solid #b9c8d3;
+  padding: 0.30em 0.48em;
+  vertical-align: top;
+}
+</style>
+"""
+    return (css.replace("__H1__", str(h1_px))
+               .replace("__H2__", str(h2_px))
+               .replace("__H3__", str(h3_px))
+               .replace("__H4__", str(h4_px)))
+
+
+def get_usage_html(md_filename: str = "usage_controls.md", base_px: int = 17) -> str:
+    """Return styled help content as HTML from a Markdown file under docs/."""
     md = _read_help_markdown(md_filename)
     if not md:
         return "<p><b>Help file not found.</b></p>"
     try:
-        import markdown
-        # "toc" adds stable id attributes to headings (used for in-text links and
-        # the HelpBrowser right-click "Go to" menu).
-        return markdown.markdown(md, extensions=["tables","fenced_code","sane_lists","toc"])  # type: ignore
+        import markdown  # type: ignore
+        content = markdown.markdown(
+            md, extensions=["tables", "fenced_code", "sane_lists", "toc"]
+        )
     except Exception:
-        return _basic_md_to_html(md)
+        content = _basic_md_to_html(md)
+    # Qt's rich-text parser does not consistently honour font sizes from a
+    # document-level <style> block for h1-h4. Add the essential typography
+    # inline so the displayed hierarchy matches the selected base font.
+    import re
 
+    base_px = max(8, min(28, int(base_px)))
+    heading_styles = {
+        1: (min(29, max(base_px + 6, 20)), "3.20em", "700", "#174f82"),
+        2: (min(27, max(base_px + 3, 18)), "1.45em", "700", "#245f91"),
+        3: (min(26, max(base_px + 2, 17)), "1.05em", "600", "#334f66"),
+        4: (min(25, max(base_px + 1, 16)), "0.80em", "600", "#4c6172"),
+    }
+
+    def _inline_heading(match):
+        level = int(match.group(1))
+        attrs = match.group(2) or ""
+        body = match.group(3)
+        size, margin_top, weight, color = heading_styles[level]
+        id_match = re.search(r'\sid=["\']([^"\']+)["\']', attrs, flags=re.I)
+        anchor = id_match.group(1) if id_match else ""
+        anchor_html = f'<a name="{anchor}"></a>' if anchor else ""
+        # QTextBrowser imposes a large built-in scale on h1-h4 even when an
+        # inline font size is supplied. Render semantic headings as ordinary
+        # paragraphs, which honour explicit sizes reliably, and keep their
+        # level/anchor as data used by the contents tree.
+        extra_style = ""
+        if level == 1:
+            extra_style = (
+                "background-color:#eaf4fb; "
+                "padding:0.22em 0.38em 0.26em 0.38em; "
+                "border-bottom:2px solid #6f9fc6;"
+            )
+        style = (
+            f"font-size:{size}px; font-weight:{weight}; color:{color}; "
+            f"margin-top:{margin_top}; margin-bottom:0.45em; {extra_style}"
+        )
+        return (
+            f'<p data-help-level="{level}" data-help-anchor="{anchor}" '
+            f'style="{style}">{anchor_html}{body}</p>'
+        )
+
+    content = re.sub(
+        r"<h([1-4])([^>]*)>(.*?)</h\1>",
+        _inline_heading,
+        content,
+        flags=re.I | re.S,
+    )
+    return _help_css(base_px) + content
 
 
 # ---------------------------------------------------------------------------

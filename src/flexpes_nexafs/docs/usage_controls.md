@@ -1,4 +1,4 @@
-# Overview
+# Application overview
 FlexPES-NEXAFS is a GUI tool for inspecting and processing **1D spectra** stored in HDF5 files (typical FlexPES/MAX IV style data).
 
 You can use it to:
@@ -35,10 +35,10 @@ Think in three layers:
 
 ---
 
-## File Controls (top-left)
+# Global controls
 These buttons control file loading and global reset actions.
 
-### **Open HDF5**
+## **Open HDF5**
 Opens one or more HDF5 files. Loaded files appear in the **HDF5 Structure** tree.
 
 You can also drag and drop one or more `.h5`/`.hdf5` files directly onto the **HDF5 Structure** tree. Invalid files are skipped with a warning.
@@ -47,13 +47,13 @@ If a file with the same file name is already loaded, the program asks whether to
 
 **Tip:** you can open multiple files at once; curves from all files can be selected and plotted together.
 
-### **Close all**
+## **Close all**
 Closes *all* opened files and clears all loaded data, trees, and plots.
 
 **Also available:** close a *single* file:
 - In **HDF5 Structure**, right-click the top-level file item → **Close** (confirmation shown).
 
-### **Clear all**
+## **Clear all**
 Resets the UI state without exiting the application. Typical effects:
 - clears plotted curves (Plotted Data),
 - clears current raw/processed selections and curves shown in plots,
@@ -61,18 +61,20 @@ Resets the UI state without exiting the application. Typical effects:
 
 Opened files remain visible in the HDF5 tree, so you can reselect curves quickly.
 
-### **Help**
+## **Help**
 Opens:
 - **What is what?** (this document, describes all UI elements)
 - **How to?** (describes typical workflows/recipes)
 - **About**
 
-### **Setup channels** and **Active beamline**
+## **Setup channels** and **Active beamline**
 Opens the channel mapping dialog and shows which profile (beamline or branch line) is currently active.
 
 **See also (How to):** *Fix wrong TEY/PEY selection (Setup channels)*
 
 ---
+
+# Data loading and selection
 
 ## Setup channels (beamline profiles)
 This dialog defines how the application recognizes roles such as **TEY / PEY / TFY / PFY**, **Energy**, and **I₀** based on dataset names/paths in the HDF5 file. It is used normally to define and use profiles specific for non-default beamlines (default is “FlexPES-A”)
@@ -116,8 +118,8 @@ Right-click a top-level file item → **Close** (with confirmation). Alternative
 
 ---
 
-# Tabs (Right panel)
-The right panel contains three tabs:
+# Data tabs and plot area
+The right panel contains three main data tabs:
 - **Raw Data**
 - **Processed Data**
 - **Plotted Data**
@@ -129,7 +131,7 @@ Each tab answers a different question:
 
 ---
 
-# Raw Data tab
+## Raw Data tab
 Purpose: select and inspect raw curves.
 
 ### Channel family selectors
@@ -161,29 +163,29 @@ A small text line under the plot displays a scalar value or short information fo
 
 ---
 
-# Processed Data tab
+## Processed Data tab
 Purpose: process visible curves (I₀ normalization, background handling, post-normalization), optionally create summed curves, then export or pass results to Plotted Data.
 
-## Top row controls
+### Top row controls
 
-### **Normalize by I₀?**
+#### **Normalize by I₀?**
 When checked, each curve is divided by the corresponding **I₀ signal/curve** from the same entry.
 
-**When to use:** Almost always: corrects for the background and temporary flux variations (like storage ring injection events).  
+**When to use:** Usually when a suitable I₀ monitor is available: it compensates for variations in incident photon flux, including temporary intensity changes such as storage-ring injection events. Background subtraction is handled separately.  
 **Tips:** If you choose an unsuitable I₀ signal (candidate), the result can be noisy or distorted.
 
-### **Choose I₀**
+#### **Choose I₀**
 Dropdown enabled only when **Normalize by I₀?** is checked.
 
 Candidates come from the channel mapping profile.
 
-### **Sum up?**
+#### **Sum up?**
 Opens the curve summation dialog to create new summed curves from selected curves. Mainly used when you have collected multiple scans from each sample for better statistics, and want to sum them up in groups corresponding to samples before proceeding with further treatment.
 
 **See also (How to):** *Sum curves (“Sum up?” dialog)*
 
 
-### Summed groups: right-click menu (Processed Data tree)
+#### Summed groups: right-click menu (Processed Data tree)
 When you create a summed curve using **Sum up?**, it appears as a *group curve* in the **Processed Data** tree.
 Right-click the group name to access:
 - **Group info**: shows which curves were used to build the group.
@@ -191,7 +193,7 @@ Right-click the group name to access:
 - **Delete**: removes the summed group after an OK/Cancel warning. (Curves already passed to **Plotted Data** are not removed automatically.)
 
 
-### **Group BG**
+#### **Group BG**
 Enabled when you have two or more curves that you want to process *as a comparable group*.
 
 **What it is for**  
@@ -218,7 +220,7 @@ Instead of fitting each curve completely independently, Group BG adjusts the aut
 
 ---
 
-### **Match pre-edge**
+#### **Match pre-edge**
 Enabled only when **Group BG** is active.
 
 **What it does**  
@@ -232,45 +234,45 @@ Match pre-edge can improve consistency, but it does so by allowing a more flexib
 
 **See also (How to):** *Compare multiple curves consistently (Group BG)*
 
-### **Pass**
+#### **Pass**
 Sends the current processed curve(s) to **Plotted Data** without clearing existing plotted curves.
 
 **When to use:** you want to style/export from Plotted Data and keep multiple curves together.
 
-### **Export**
+#### **Export**
 Exports processed data to CSV. Works for individual curves, not a group. Group CSV export is possible from the Plotted Data tab.
 
 **See also (How to):** *Make a single clean processed curve* and *Sum curves (“Sum up?” dialog)*
 
-## Background and post-normalization controls (bottom row)
+### Background and post-normalization controls (bottom row)
 
-### **Choose BG** — None / Auto / Manual
+#### **Choose BG** — None / Auto / Manual
 - **None**: no background model
 - **Auto**: polynomial pre-edge background
 - **Manual**: anchor-based adjustment (built on top of an automatic estimate)
 
-### **Poly degree**
+#### **Poly degree**
 Polynomial degree for Auto/Manual background.
 
-### **Pre-edge (%)**
+#### **Pre-edge (%)**
 Pre-edge region length (percent of energy span) used for baseline fitting.
 
-### **Subtract BG?**
+#### **Subtract BG?**
 Shows BG-subtracted curves when enabled.
 
-### **Normalize** — None / Max / Jump / Area
+#### **Normalize** — None / Max / Jump / Area
 Post-normalization scaling (enabled/disabled depending on mode).
 
 
 ---
 
-# Plotted Data tab
+## Plotted Data tab
 Purpose: figure-like plotting and exporting.
 
-## Plotted curve list (tree on the right)
+### Plotted curve list (tree on the right)
 Here you can manage which curves are shown and how they look. Each row corresponds to one curve currently loaded into Plotted Data.
 
-### What you can do there
+#### What you can do there
 
 - Show / hide curves (visibility toggle per curve).
 - Reorder curves by drag-and-drop (this affects plot order and legend order).
@@ -281,16 +283,16 @@ Here you can manage which curves are shown and how they look. Each row correspon
 - Remove a curve from the plotted set (delete/remove control on the row).
 - Add a curve to the reference library using the bookmark/add-to-library control (available on each curve row).
 
-### Selection behavior
+#### Selection behavior
 
 Selecting an item in the list makes that curve the “active” curve for certain actions (e.g. operations that act on one curve at a time, like naming in user-defined legend mode).
 
 **Tip:** If you want a consistent export order and legend order, set it here by reordering the curves before exporting.
 
 
-## Top row controls
+### Top row controls
 
-### Legend
+#### Legend
 Dropdown: **Legend**
 - **None**
 - **User-defined**
@@ -302,27 +304,27 @@ Behavior:
 
 **Tips:** If Legend is **None**, CSV export from Plotted Data is blocked (there is no naming scheme).
 
-### Annotation
+#### Annotation
 Checkbox: **Annotation**
 - shows/hides one annotation box,
 - right-click to edit text/style,
 - drag to reposition.
 
-## Bottom row controls
+### Bottom row controls
 
-### Waterfall
+#### Waterfall
 Checkbox + slider/spinbox (enabled only when Waterfall is enabled).  
 Applies a uniform vertical offset to separate many curves visually.
 
-### Grid
+#### Grid
 Dropdown: `None / Coarse / Fine / Finest`
 
-### Load reference
+#### Load reference
 Button: **Load reference**
 Opens the reference library dialog where you can load references into the plot.
 The same dialog contains **Delete reference** (removes from the library).
 
-### Export/Import
+#### Export/Import
 Button opens a menu:
 - **Export CSV**
 - **Import CSV**
@@ -334,27 +336,19 @@ Export naming depends on Legend mode:
 
 **See also (How to):** *Export plotted curves to CSV (Export/Import → Export CSV)*
 
-### PCA (decomposition window)
+#### PCA (decomposition window)
 Button: **PCA**
 
-This opens the **decomposition window** and (optionally) sends curves from Plotted Data to it. The decomposition tools are meant to help you **separate mixed spectral contributions** and **compare multiple spectra systematically**, for example:
-- identify common components across a series,
-- find dominant variations (PCA),
-- try non-negative component models (NMF),
-- fit linear mixtures with constraints (MCR-ALS),
-- explore anchor-based / guided decompositions (when available in the window).
+This opens the **decomposition window** and (optionally) sends curves from Plotted Data to it. Although the button is labelled **PCA**, the window contains the broader PCA/NMF/MCR-ALS and anchor-based decomposition workflow.
 
-#### What you typically use PCA for
-- You have many spectra (e.g. a spatial scan, temperature series, time series) and want to understand:
-  - “How many independent spectral shapes are present?”
-  - “Which spectra vary together?”
-  - “Can I represent the series as a mixture of a few components?”
+##### Role in the workflow
+Use these tools when you have a series of comparable spectra and want to examine dominant variations, estimate the number of significant components, or model the series using non-negative or constrained components. Detailed guidance on PCA, NMF, MCR-ALS, anchors, constraints, diagnostics, and interpretation is available from **Help inside the decomposition window**.
 
-#### What happens when you click PCA
+##### What happens when you click PCA
 - If eligible curves are available in Plotted Data, they are transferred to the decomposition window.
 - If no visible curves are selected/eligible, the window can still open (useful if you plan to load data from within that window).
 
-#### Requirements enforced by the app (transfer from Plotted Data)
+##### Requirements enforced by the app (transfer from Plotted Data)
 The transfer is blocked unless:
 - **Waterfall** is OFF (waterfall changes y-values and is for visualization only),
 - post **Normalize** is **Area** for all selected curves (ensures comparability),
@@ -362,6 +356,6 @@ The transfer is blocked unless:
 
 **See also (How to):** *Send curves to PCA / decomposition window*
 
-### Clear Plotted
+#### Clear Plotted
 Removes all curves from Plotted Data without changing Raw/Processed selections.
 

@@ -1,4 +1,6 @@
-# Quickstart
+# Load and inspect data
+
+## Quickstart
 You’ve just opened FlexPES‑NEXAFS and you want to get from “a file on disk” to “a curve I can trust”.
 
 Start simple:
@@ -19,7 +21,7 @@ Start simple:
 
 **Controls used (What is what?):** *Raw Data tab*, *Processed Data tab*, *Export*, *Pass*
 
-## Abbreviations used below (quick reference)
+### Abbreviations used below (quick reference)
 - **TEY**: Total Electron Yield
 - **PEY**: Partial Electron Yield
 - **TFY**: Total Fluorescence Yield
@@ -33,12 +35,11 @@ Start simple:
 
 ---
 
-# Fix wrong TEY/PEY selection (Setup channels)
-Sometimes the app does exactly what you asked—just not what you *meant*. The classic example: you click **All TEY data** and either nothing happens, or the “TEY” curves clearly aren’t the signal you expected.
+## Fix wrong TEY/PEY selection (Setup channels)
+If **All TEY data** (or another detector-family selector) selects nothing or clearly selects the wrong signal, the file’s channel naming may not match the current channel profile.
 
-This almost always means the file’s channel naming doesn’t match the current channel profile.
 
-**How to fix it (in human terms):**
+**How to fix it:**
 1) Click **Setup channels**. Think of this dialog as the app’s “dictionary” for your file naming conventions.  
 2) Pick the profile that is closest to your data (for example, a FlexPES profile).  
 3) If needed, adjust the substrings/candidates so that the app can correctly recognize TEY/PEY/TFY/PFY and suitable I₀ candidates.  
@@ -50,18 +51,16 @@ If the selector now lights up the right curves, you’re done.
 
 ---
 
-# Inspect many curves quickly (Raw Data selection)
-Imagine you have a dataset with many entries: repeated scans, a temperature series, or a map. You *could* click individual datasets in the HDF5 tree—but you don’t want to spend your afternoon doing that.
+## Inspect many curves quickly (Raw Data selection)
+For datasets with many entries—such as repeated scans, a temperature series, or a map—the Raw Data tab lets you select related curves without checking each dataset individually in the HDF5 tree.
 
-The Raw Data tab is built for this situation.
-
-## Option A: “show me all curves of a detector family”
+### Option A: “show me all curves of a detector family”
 If you want the “standard” signals:
 - Click **All TEY data** (or PEY/TFY/PFY).
 
 You’ll immediately see the family of curves, which makes it easy to spot outliers, drift, bad scans, or obvious trends before you process anything.
 
-## Option B: “follow one channel across many entries”
+### Option B: “follow one channel across many entries”
 If you know you always want the same channel name:
 - Enable **All in channel**, then choose the channel in the dropdown.
 
@@ -73,10 +72,10 @@ This is great for non-standard channels, monitor signals, or anything that isn�
 
 ---
 
-# Make a single clean processed curve
-This workflow is for the common situation: you’re not trying to compare 50 curves yet—you just want *one* spectrum that is corrected, readable, and exportable.
+# Process spectra
 
-Think of it as polishing one curve until it’s “presentation ready”.
+## Make a single clean processed curve
+This workflow is for the common situation: you’re not trying to compare 50 curves yet—you just want *one* spectrum that is corrected, readable, and exportable.
 
 1) In **Processed Data**, decide whether you need incident-beam normalization.  
    If yes: enable **Normalize by I₀?** and pick the correct **I₀ signal/curve** in **Choose I₀**.  
@@ -98,7 +97,7 @@ Think of it as polishing one curve until it’s “presentation ready”.
 
 ---
 
-# Sum curves (“Sum up?” dialog)
+## Sum curves (“Sum up?” dialog)
 Summation is what you reach for when you have repeats: several scans that are “the same measurement”, just noisy or slightly shifted, and you want one cleaner curve.
 
 When you click **Sum up?**, you’re essentially telling the app: *“Treat these curves as one group and give me a single representative curve.”*
@@ -119,7 +118,7 @@ After summation, you can manage the new group directly in the **Processed Data**
 
 ---
 
-# Compare multiple curves consistently (Group BG)
+## Compare multiple curves consistently (Group BG)
 Once you move from “one nice curve” to “a set of curves I want to compare”, the risk changes: tiny differences in baseline handling can dominate your interpretation.
 
 That’s what **Group BG** is for: it puts the app into a consistent group mode so the set behaves like a set.
@@ -138,7 +137,9 @@ That’s what **Group BG** is for: it puts the app into a consistent group mode 
 
 ---
 
-# Prepare a publication-style plot (Plotted Data)
+# Compose, compare, and export
+
+## Prepare a publication-style plot (Plotted Data)
 Processed Data is where you *compute*; Plotted Data is where you *compose*.
 
 In Plotted Data you can treat curves like figure elements:
@@ -164,7 +165,7 @@ A typical “figure-making” rhythm:
 
 ---
 
-# Export plotted curves to CSV (Export/Import → Export CSV)
+## Export plotted curves to CSV (Export/Import → Export CSV)
 Exporting from Plotted Data is for when you have *a set* of curves and you want them in one tidy CSV.
 
 Before you export, decide how you want the columns to be named:
@@ -180,7 +181,7 @@ Then:
 
 ---
 
-# Import CSV into Plotted Data
+## Import CSV into Plotted Data
 Import is the mirror of export: it lets you bring curves back in, or overlay external curves for comparison.
 
 1) Click **Export/Import → Import CSV**.
@@ -192,7 +193,7 @@ The curves appear in the plotted list and on the plot, ready for styling and exp
 
 ---
 
-# Use reference spectra (Load reference)
+## Use reference spectra (Load reference)
 References are for the moments when you want a known spectrum on top of your data—an internal standard, a textbook reference, or a saved “good sample” spectrum.
 
 1) Click **Load reference** in Plotted Data.  
@@ -203,7 +204,9 @@ References are for the moments when you want a known spectrum on top of your dat
 
 ---
 
-# Send curves to PCA / decomposition window
+# Multivariate analysis
+
+## Send curves to PCA / decomposition window
 This workflow is for *series thinking*: you have many spectra and you suspect the set is a mixture of a few underlying components.
 
 The decomposition window helps you answer questions like:
@@ -218,6 +221,6 @@ The decomposition window helps you answer questions like:
 4) Make sure **Legend** is not **None** so the spectra have names.  
 5) Click **PCA**.
 
-If requirements are met, curves are sent into the decomposition window where you can run PCA/NMF/MCR‑ALS.
+If requirements are met, curves are sent into the decomposition window where you can run PCA/NMF/MCR‑ALS. Use **Help inside the decomposition window** for method-specific guidance, parameters, diagnostics, and interpretation.
 
 **Controls used (What is what?):** *PCA (decomposition window)*, *Pass*, *Plotted Data tab*

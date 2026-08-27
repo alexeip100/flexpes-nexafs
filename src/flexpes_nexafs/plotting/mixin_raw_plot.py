@@ -289,7 +289,10 @@ class RawPlotMixin:
                     except Exception:
                         pass
                     try:
-                        self._apply_grid_mode()
+                        if hasattr(self, "rescale_plotted_axes"):
+                            self.rescale_plotted_axes()
+                        else:
+                            self._apply_grid_mode()
                     except Exception:
                         pass
                     self.update_legend()
@@ -460,7 +463,10 @@ class RawPlotMixin:
 
         self.data_tabs.setCurrentIndex(2)
         try:
-            self._apply_grid_mode()
+            if hasattr(self, "rescale_plotted_axes"):
+                self.rescale_plotted_axes()
+            else:
+                self._apply_grid_mode()
         except Exception:
             pass
         self.update_legend()
@@ -556,6 +562,28 @@ class RawPlotMixin:
             self.update_legend()
         except Exception:
             pass
+
+    def confirm_clear_plotted_data(self):
+        """Ask before clearing the complete Plotted Data composition."""
+        try:
+            if self.plotted_list.count() == 0:
+                return
+        except Exception:
+            try:
+                if not getattr(self, "plotted_curves", None):
+                    return
+            except Exception:
+                pass
+
+        answer = QMessageBox.question(
+            self,
+            "Clear plotted curves",
+            "Do you want to clear all plotted curves?",
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer == QMessageBox.Ok:
+            self.clear_plotted_data()
 
     def clear_plotted_data(self):
         """Clear the Plotted Data axes/list while preserving UI state.

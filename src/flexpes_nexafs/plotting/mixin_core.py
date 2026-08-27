@@ -23,9 +23,10 @@ from PyQt5.QtWidgets import (
     QTreeWidget,
     QSizePolicy,
     QShortcut,
+    QWidget,
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPixmap, QColor, QIcon, QTextDocument, QKeySequence
+from PyQt5.QtGui import QPixmap, QColor, QIcon, QTextDocument, QKeySequence, QFont, QBrush
 
 from flexpes_nexafs.utils.sorting import parse_entry_number
 from ..data import lookup_energy
@@ -266,97 +267,189 @@ class CorePlottingMixin:
         QMessageBox.information(self, "About FlexPES NEXAFS Plotter", info_text)
 
     
-    def show_usage_info(self, md_filename: str = "help.md", window_title: str = "Usage — FlexPES NEXAFS Plotter"):
-        """Show the Usage dialog populated from a Markdown file under docs/."""
+    def show_usage_info(self, md_filename: str = "usage_controls.md", window_title: str = "Usage — FlexPES NEXAFS Plotter"):
+        """Show the modeless Help browser with TOC, search, and font-size controls."""
+        existing = getattr(self, "_help_dialog", None)
+        if existing is not None:
+            try:
+                if getattr(self, "_help_md_filename", None) == md_filename and existing.isVisible():
+                    existing.raise_()
+                    existing.activateWindow()
+                    return
+                existing.close()
+            except Exception:
+                pass
+
         try:
-            usage_html = get_usage_html(md_filename)
+            usage_html = get_usage_html(md_filename, 17)
         except Exception:
             usage_html = "<p><b>Help text could not be loaded.</b></p>"
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle(window_title)
-        dlg.resize(900, 650)
+        dlg = QDialog(None, Qt.Window)
+        dlg.setModal(False)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._help_dialog = dlg
+        self._help_md_filename = md_filename
+
+        def _forget_help_dialog(*_args):
+            if getattr(self, "_help_dialog", None) is dlg:
+                self._help_dialog = None
+                self._help_md_filename = None
+
+        dlg.destroyed.connect(_forget_help_dialog)
+
+        help_name = "What is what?" if md_filename == "usage_controls.md" else "How to?"
+        pane_subtitle = (
+            "GUI elements and analysis methods"
+            if md_filename == "usage_controls.md"
+            else "Practical workflows and troubleshooting"
+        )
+        dlg.setWindowTitle(f"Help — {help_name}")
+        dlg.resize(1240, 800)
+        dlg.setMinimumSize(980, 680)
         dlg.setSizeGripEnabled(True)
 
-        # Enable maximize button on the dialog window.
         try:
-            dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowMaximizeButtonHint)
+            dlg.setWindowFlags(
+                dlg.windowFlags()
+                | Qt.WindowMinimizeButtonHint
+                | Qt.WindowMaximizeButtonHint
+                | Qt.WindowCloseButtonHint
+            )
         except Exception:
             pass
 
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
-        # --- Controls row: font size + search
-        controls_row = QHBoxLayout()
-        controls_row.setContentsMargins(0, 0, 0, 0)
-        controls_row.setSpacing(8)
+        header = QWidget(dlg)
+        header.setObjectName("helpHeader")
+        header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        header.setMaximumHeight(44)
+        header.setStyleSheet(
+            "QWidget#helpHeader { background: #eef2f5; border: 1px solid #c5ccd2; }"
+        )
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(10, 5, 8, 5)
+        header_layout.setSpacing(8)
 
-        controls_row.addWidget(QLabel("Font size:"))
+        pane_title = QLabel(pane_subtitle)
+        pane_title.setObjectName("helpPaneTitle")
+        pane_title.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        pane_title.setStyleSheet(
+            "QLabel#helpPaneTitle { font-weight: 700; font-style: italic; "
+            "color: #46515a; padding: 0; }"
+        )
+        header_layout.addWidget(pane_title)
+        header_layout.addStretch(1)
+
+        header_layout.addWidget(QLabel("Font size:"))
         font_spin = QSpinBox()
         font_spin.setRange(8, 28)
         font_spin.setSingleStep(1)
-        font_spin.setValue(18)
+        font_spin.setValue(17)
         font_spin.setToolTip("Change the font size used in this help window.")
-        controls_row.addWidget(font_spin)
+        header_layout.addWidget(font_spin)
 
-        controls_row.addSpacing(12)
-        controls_row.addWidget(QLabel("Find:"))
-
+        header_layout.addSpacing(12)
+        header_layout.addWidget(QLabel("Find:"))
         search_edit = QLineEdit()
-        search_edit.setPlaceholderText("Search help…")
+        search_edit.setPlaceholderText("Search help...")
         try:
             search_edit.setClearButtonEnabled(True)
         except Exception:
             pass
         search_edit.setToolTip("Press Enter for next, Shift+Enter for previous.")
         search_edit.setMinimumWidth(220)
-        controls_row.addWidget(search_edit)
+        header_layout.addWidget(search_edit)
 
         prev_btn = QPushButton("Prev")
         prev_btn.setToolTip("Find the previous match.")
-        controls_row.addWidget(prev_btn)
-
+        header_layout.addWidget(prev_btn)
         next_btn = QPushButton("Next")
         next_btn.setToolTip("Find the next match.")
-        controls_row.addWidget(next_btn)
-
-        controls_row.addStretch(1)
-        layout.addLayout(controls_row)
+        header_layout.addWidget(next_btn)
+        layout.addWidget(header, 0)
 
         splitter = QSplitter(Qt.Horizontal, dlg)
 
-        # Table of contents
+        toc_panel = QWidget()
+        toc_layout = QVBoxLayout(toc_panel)
+        toc_layout.setContentsMargins(0, 0, 0, 0)
+        toc_layout.setSpacing(5)
+        toc_title = QLabel("Table of Contents")
+        toc_title.setObjectName("tocTitle")
+        toc_title.setStyleSheet(
+            "QLabel#tocTitle { font-weight: 700; color: #000000; "
+            "background: #d9dde1; border: 1px solid #bfc5ca; padding: 5px 7px; }"
+        )
+        toc_layout.addWidget(toc_title)
+
         toc = QTreeWidget()
         toc.setHeaderHidden(True)
-        toc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        toc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        toc.setMinimumWidth(255)
+        toc_layout.addWidget(toc, 1)
 
         def _set_toc_style(px: int):
             try:
-                px = int(px)
+                base = int(px)
             except Exception:
-                px = 14
+                base = 17
+            sizes = {
+                1: min(20, max(12, round(base * 0.84))),
+                2: min(18, max(11, round(base * 0.76))),
+                3: min(16, max(10, round(base * 0.68))),
+            }
+            toc_title_font = QFont(toc_title.font())
+            toc_title_font.setPointSize(sizes[1])
+            toc_title_font.setBold(True)
+            toc_title.setFont(toc_title_font)
+            pane_title_font = QFont(pane_title.font())
+            pane_title_font.setPointSize(sizes[1])
+            pane_title_font.setBold(True)
+            pane_title_font.setItalic(True)
+            pane_title.setFont(pane_title_font)
             try:
                 toc.setStyleSheet(
-                    "QTreeWidget {"
-                    f" font-size: {px}px;"
+                    "QTreeWidget { border: 1px solid palette(mid); padding: 3px; }"
+                    "QTreeWidget::item { padding: 3px 4px; }"
+                    "QTreeWidget::item:selected {"
+                    " background: palette(highlight); color: palette(highlighted-text);"
+                    " border-left: 4px solid #174f82;"
                     " }"
-                    "QTreeWidget::item { color: #0066CC; }"
-                    "QTreeWidget::item:selected { color: palette(text); }"
+                    "QTreeWidget::branch { margin-right: 2px; }"
                 )
+                root = toc.invisibleRootItem()
+                stack = [root.child(i) for i in range(root.childCount())]
+                while stack:
+                    item = stack.pop()
+                    level = int(item.data(0, Qt.UserRole + 1) or 3)
+                    font = QFont(toc.font())
+                    font.setPointSize(sizes.get(level, sizes[3]))
+                    font.setBold(level == 1)
+                    font.setWeight(QFont.DemiBold if level == 2 else (QFont.Bold if level == 1 else QFont.Normal))
+                    item.setFont(0, font)
+                    if level == 1:
+                        item.setForeground(0, QBrush(QColor("#174f82")))
+                        item.setBackground(0, QBrush(QColor("#eef5fa")))
+                    elif level == 2:
+                        item.setForeground(0, QBrush(QColor("#2d5775")))
+                    else:
+                        item.setForeground(0, QBrush(QColor("#5d6e7a")))
+                    stack.extend(item.child(i) for i in range(item.childCount()))
             except Exception:
                 pass
 
         _set_toc_style(font_spin.value())
-        toc.setMinimumWidth(200)
-        toc.setMaximumWidth(360)
 
-        # Main help browser
         browser = HelpBrowser()
         browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        browser.setStyleSheet("font-size: 18px;")
+        browser.setStyleSheet("font-size: 17px;")
+        browser.setMinimumWidth(380)
         browser.setHtml(usage_html)
 
-        # --- Search helpers (wrap-around)
         def _do_help_search(backward: bool = False):
             text = (search_edit.text() or "").strip()
             if not text:
@@ -366,7 +459,6 @@ class CorePlottingMixin:
                 found = browser.find(text, flags)
             except Exception:
                 found = False
-
             if not found:
                 try:
                     cursor = browser.textCursor()
@@ -375,7 +467,6 @@ class CorePlottingMixin:
                     found = browser.find(text, flags)
                 except Exception:
                     found = False
-
             if not found:
                 try:
                     QMessageBox.information(dlg, "Search", f'No matches for "{text}".')
@@ -389,50 +480,26 @@ class CorePlottingMixin:
         except Exception:
             pass
 
-        # Ctrl+F focuses the search field
         try:
             sc_find = QShortcut(QKeySequence.Find, dlg)
             sc_find.activated.connect(lambda: (search_edit.setFocus(), search_edit.selectAll()))
-        except Exception:
-            pass
-
-        # F3 / Shift+F3 (common convention)
-        try:
             sc_next = QShortcut(QKeySequence("F3"), dlg)
             sc_next.activated.connect(lambda: _do_help_search(False))
             sc_prev = QShortcut(QKeySequence("Shift+F3"), dlg)
             sc_prev.activated.connect(lambda: _do_help_search(True))
-        except Exception:
-            pass
-
-        # Shift+Enter = previous (optional convenience)
-        try:
             sc_prev_enter = QShortcut(QKeySequence("Shift+Return"), dlg)
             sc_prev_enter.activated.connect(lambda: _do_help_search(True))
         except Exception:
             pass
 
-        # Build TOC from extracted heading anchors (H1/H2/H3)
         try:
             toc.clear()
             current_h1 = None
             current_h2 = None
-
             for level, title, anchor in getattr(browser, "_help_anchors", []) or []:
                 item = QTreeWidgetItem([title])
                 item.setData(0, Qt.UserRole, anchor)
-
-                # Style by level (H3 less prominent)
-                try:
-                    f = toc.font()
-                    if level in (1, 2):
-                        f.setBold(True)
-                    else:
-                        f.setBold(False)
-                    item.setFont(0, f)
-                except Exception:
-                    pass
-
+                item.setData(0, Qt.UserRole + 1, level)
                 if level == 1:
                     toc.addTopLevelItem(item)
                     current_h1 = item
@@ -449,34 +516,52 @@ class CorePlottingMixin:
                         toc.addTopLevelItem(item)
                     else:
                         parent.addChild(item)
+            toc.collapseAll()
+            if toc.topLevelItemCount():
+                toc.topLevelItem(0).setExpanded(True)
+            _set_toc_style(font_spin.value())
 
-            toc.expandAll()
+            _expansion_guard = {"active": False}
+
+            def _keep_one_major_branch(item):
+                if _expansion_guard["active"] or item.parent() is not None:
+                    return
+                _expansion_guard["active"] = True
+                try:
+                    for idx in range(toc.topLevelItemCount()):
+                        other = toc.topLevelItem(idx)
+                        if other is not item:
+                            other.setExpanded(False)
+                finally:
+                    _expansion_guard["active"] = False
+
+            toc.itemExpanded.connect(_keep_one_major_branch)
 
             def _jump_to_section(item, _col=0):
                 anchor = item.data(0, Qt.UserRole)
                 if anchor:
                     browser.scrollToAnchor(str(anchor))
-
             toc.itemClicked.connect(_jump_to_section)
         except Exception:
             pass
 
-        splitter.addWidget(toc)
+        splitter.addWidget(toc_panel)
         splitter.addWidget(browser)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([260, 640])
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        splitter.setSizes([390, 830])
+        layout.addWidget(splitter, 1)
 
-        layout.addWidget(splitter)
-
-        # Apply font size changes to both TOC and browser
         def _apply_help_font(px: int):
             try:
                 px = int(px)
             except Exception:
-                px = 14
+                px = 17
             try:
                 browser.setStyleSheet(f"font-size: {px}px;")
+                browser.setHtml(get_usage_html(md_filename, px))
             except Exception:
                 pass
             try:
@@ -485,9 +570,12 @@ class CorePlottingMixin:
                 pass
 
         font_spin.valueChanged.connect(_apply_help_font)
-
-        dlg.exec_()
-
+        dlg.show()
+        try:
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            pass
 
 
 
